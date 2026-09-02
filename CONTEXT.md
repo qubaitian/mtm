@@ -61,8 +61,14 @@ _Avoid_: shell session, command frontend
 
 **Browser frontend**:
 A Terminal frontend that runs in a web browser.
-It connects one Attachment through the Session manager.
+It connects one Attachment to a managed Session.
 _Avoid_: web session, browser session, ttyd session
+
+**Browser terminal**:
+A browser-hosted ordinary terminal for one Shell session.
+It does not select a managed Session by default.
+Users use normal MTM operations to enter or create managed Sessions.
+_Avoid_: browser session, web session
 
 **Shared output**:
 Raw PTY output that every attached frontend can observe.

@@ -1,50 +1,39 @@
 (in-package #:mtm.app)
 
+;; Define the loopback address used by the Browser terminal.
 (defparameter +browser-address+ "127.0.0.1")
-(defparameter +browser-port+ 7681)
-(defparameter +browser-session-prefix+ "/session/")
-(defparameter +browser-close-normal-code+ 1000)
-(defparameter +browser-close-policy-code+ 1008)
-(defparameter +browser-close-retry-code+ 1013)
 
+;; Define the local port used by the Browser terminal.
+(defparameter +browser-port+ 7681)
+
+;; Define the normal WebSocket close code.
+(defparameter +browser-close-normal-code+ 1000)
+
+;; Define the policy close code for an invalid handshake.
+(defparameter +browser-close-policy-code+ 1008)
+
+;; Return the local URL for the Browser terminal.
 (defun get-browser-url ()
-  "Return the local Browser frontend URL."
+  "Return the local Browser terminal URL."
   (format nil "http://~A:~D/" +browser-address+ +browser-port+))
 
+;; Build a Clack response with one BODY string.
 (defun new-browser-response (status content-type body)
   "Return a Clack response with one BODY string."
   (list status
         (list :content-type content-type)
         (list body)))
 
+;; Build the not-found response for unsupported Browser routes.
 (defun new-browser-not-found-response ()
-  "Return the Browser frontend's not-found response."
+  "Return the Browser terminal's not-found response."
   (new-browser-response 404
-                    "text/plain; charset=utf-8"
-                    (format nil "Not found.~%")))
+                        "text/plain; charset=utf-8"
+                        (format nil "Not found.~%")))
 
-(defun get-browser-escaped-html (text)
-  "Escape TEXT for an HTML text or attribute position."
-  (with-output-to-string (output)
-    (loop for character across (princ-to-string text)
-          do (case character
-               (#\& (write-string "&amp;" output))
-               (#\< (write-string "&lt;" output))
-               (#\> (write-string "&gt;" output))
-               (#\" (write-string "&quot;" output))
-               (#\' (write-string "&#39;" output))
-               (otherwise (write-char character output))))))
-
-(defun get-browser-session-name (path)
-  "Return the Session name in PATH, or NIL."
-  (when (and (stringp path)
-             (uiop:string-prefix-p +browser-session-prefix+ path))
-    (let ((name (subseq path (length +browser-session-prefix+))))
-      (and (plusp (length name))
-           name))))
-
-(defun new-browser-index-page ()
-  "Return the Browser frontend's Session list page."
+;; Build the xterm.js page for one ordinary Browser terminal.
+(defun new-browser-terminal-page ()
+  "Return the xterm.js page for an ordinary Browser terminal."
   (with-output-to-string (html)
     (write-string
      "<!doctype html>
@@ -52,41 +41,7 @@
 <head>
   <meta charset=\"utf-8\">
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
-  <title>MTM sessions</title>
-</head>
-<body>
-  <h1>MTM sessions</h1>
-"
-     html)
-    (let ((sessions (get-session-list)))
-      (if sessions
-          (dolist (session sessions)
-            (let ((name (get-browser-escaped-html (car session)))
-                  (state (get-browser-escaped-html
-                          (string-downcase (princ-to-string (cdr session))))))
-              (format html
-                      "  <p><a href=\"/session/~A\">~A</a> <small>~A</small></p>~%"
-                      name
-                      name
-                      state)))
-          (write-string "  <p>No sessions.</p>
-"                       html)))
-    (write-string
-     "</body>
-</html>
-"
-     html)))
-
-(defun new-browser-session-page (name width height)
-  "Return the xterm.js page for NAME with fixed terminal dimensions."
-  (with-output-to-string (html)
-    (format html
-            "<!doctype html>
-<html lang=\"en\">
-<head>
-  <meta charset=\"utf-8\">
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
-  <title>MTM: ~A</title>
+  <title>MTM browser terminal</title>
   <link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css\">
   <style>
     html, body { width: 100%; height: 100%; margin: 0; background: #111; }
@@ -97,13 +52,12 @@
   <div id=\"terminal\"></div>
   <script src=\"https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js\"></script>
   <script>
-    const columns = ~D;
-    const rows = ~D;
+    const columns = 80;
+    const rows = 24;
     const encoder = new TextEncoder();
     const terminal = new Terminal({ cols: columns, rows: rows, cursorBlink: true });
     terminal.open(document.getElementById(\"terminal\"));
     let socket = null;
-    let ended = false;
 
     function inputFrame(bytes) {
       const frame = new Uint8Array(bytes.length + 1);
@@ -126,16 +80,9 @@
         }
       });
       socket.addEventListener(\"close\", (event) => {
-        if (event.code === 1000) {
-          ended = true;
-          terminal.write(\"\\r\\n[Session ended]\\r\\n\");
-        } else if (event.code === 1008) {
-          ended = true;
-          terminal.write(\"\\r\\n[Connection rejected]\\r\\n\");
-        } else if (!ended) {
-          terminal.write(\"\\r\\n[Reconnecting...]\\r\\n\");
-          window.setTimeout(connect, 1000);
-        }
+        terminal.write(event.code === 1000
+          ? \"\\r\\n[Shell exited]\\r\\n\"
+          : \"\\r\\n[Terminal disconnected]\\r\\n\");
       });
     }
 
@@ -149,10 +96,9 @@
 </body>
 </html>
 "
-            (get-browser-escaped-html name)
-            width
-            height)))
+     html)))
 
+;; Decode one Browser handshake message as UTF-8 text.
 (defun get-browser-message-string (message)
   "Decode a Browser handshake MESSAGE as UTF-8 text."
   (typecase message
@@ -162,11 +108,15 @@
     (otherwise
      (error "The Browser handshake must be text or bytes."))))
 
+;; Read the terminal size from one Browser handshake.
 (defun get-browser-handshake-size (message)
   "Return the columns and rows from a Browser handshake."
-  (let* ((object (yason:parse (get-browser-message-string message)
+  (let* (;; Parse the browser's initial terminal-size object.
+         (object (yason:parse (get-browser-message-string message)
                               :object-as :alist))
+         ;; Read the requested terminal column count.
          (columns (cdr (assoc "columns" object :test #'string=)))
+         ;; Read the requested terminal row count.
          (rows (cdr (assoc "rows" object :test #'string=))))
     (unless (and (integerp columns)
                  (plusp columns)
@@ -175,150 +125,123 @@
       (error "The Browser handshake has an invalid terminal size."))
     (values columns rows)))
 
-(defun get-browser-handshake (session message)
-  "Check that MESSAGE matches SESSION's fixed terminal size."
-  (multiple-value-bind (columns rows)
-      (get-browser-handshake-size message)
-    (multiple-value-bind (session-width session-height)
-        (get-session-size session)
-      (unless (and (= columns session-width)
-                   (= rows session-height))
-        (error "The Browser terminal size does not match the Session."))))
-  t)
-
+;; Identify a raw input frame from the Browser terminal.
 (defun browser-input-message-p (message)
   "Return true when MESSAGE is a raw input frame."
   (and (typep message '(vector (unsigned-byte 8)))
        (plusp (length message))
        (zerop (aref message 0))))
 
+;; Prefix raw BYTES with the ttyd-compatible output marker.
 (defun get-browser-output-frame (bytes)
   "Prefix raw BYTES with the ttyd-compatible output marker."
   (check-type bytes (vector (unsigned-byte 8)))
-  (let ((frame (make-array (1+ (length bytes))
+  (let (;; Allocate one marker byte before the raw output.
+        (frame (make-array (1+ (length bytes))
                            :element-type '(unsigned-byte 8))))
     (setf (aref frame 0) 0)
     (replace frame bytes :start1 1)
     frame))
 
-(defun get-browser-close-code (session)
-  "Return the close code for SESSION's current state."
-  (if (session-running-p session)
-      +browser-close-retry-code+
-      +browser-close-normal-code+))
-
-(defun set-browser-output (websocket attachment)
-  "Forward ATTACHMENT output through WEBSOCKET."
+;; Forward ordinary Shell output through the Browser WebSocket.
+(defun set-browser-output (websocket shell-session)
+  "Forward SHELL-SESSION output through WEBSOCKET."
   (handler-case
-      (progn
-        (websocket-driver:send-binary
-         websocket
-         (get-browser-output-frame
-          (get-utf8
-           (get-terminal-render
-            (get-attachment-start-screen attachment)))))
-        (loop
-          (multiple-value-bind (bytes end-p)
-              (get-attachment-output attachment)
-            (when (and bytes (plusp (length bytes)))
-              (websocket-driver:send-binary
-               websocket
-               (get-browser-output-frame bytes)))
-            (when end-p
-              (websocket-driver:close-connection
-               websocket
-               ""
-               (get-browser-close-code
-                (attachment-session attachment)))
-              (return)))))
+      (loop
+        (multiple-value-bind (bytes end-p)
+            (get-shell-output-bytes shell-session)
+          (when (and bytes (plusp (length bytes)))
+            (websocket-driver:send-binary
+             websocket
+             (get-browser-output-frame bytes)))
+          (when end-p
+            (websocket-driver:close-connection
+             websocket
+             ""
+             +browser-close-normal-code+)
+            (return))))
     (error ()
       (ignore-errors
         (websocket-driver:close-connection
          websocket
          ""
-         (get-browser-close-code (attachment-session attachment)))))))
+         +browser-close-normal-code+)))))
 
-(defun set-browser-websocket (env session)
-  "Return a streaming response for SESSION's Browser Attachment."
-  (let ((websocket (websocket-driver:make-server
+;; Run one ordinary Shell behind a Browser WebSocket.
+(defun set-browser-websocket (env)
+  "Return a streaming response for one ordinary Browser terminal."
+  (let (;; Keep the WebSocket for the whole Browser connection.
+        (websocket (websocket-driver:make-server
                     env
                     :accept-protocols '("tty")))
-        (attachment nil)
+        ;; Keep the ordinary Shell created for this Browser connection.
+        (shell-session nil)
+        ;; Keep the output reader so cleanup can join it.
         (output-thread nil))
     (websocket-driver:on
      :message
      websocket
      (lambda (message)
-       (if attachment
+       (if shell-session
            (when (browser-input-message-p message)
-             (set-attachment-input attachment (subseq message 1)))
+             (set-shell-input shell-session (subseq message 1)))
            (handler-case
-               (progn
-                 (get-browser-handshake session message)
-                 (setf attachment (new-attachment (session-name session))
+               (multiple-value-bind (columns rows)
+                   (get-browser-handshake-size message)
+                 (setf shell-session
+                       (new-shell-session :width columns :height rows)
                        output-thread
                        (make-thread
                         (lambda ()
-                          (set-browser-output websocket attachment))
-                        :name "mtm browser output")))
+                          (set-browser-output websocket shell-session))
+                        :name "mtm browser shell output")))
              (error ()
                (websocket-driver:close-connection
                 websocket
                 ""
-                (if (session-running-p session)
-                    +browser-close-policy-code+
-                    +browser-close-normal-code+)))))))
+                +browser-close-policy-code+))))))
     (websocket-driver:on
      :close
      websocket
      (lambda (&key code reason)
        (declare (ignore code reason))
-       (when attachment
-         (ignore-errors (del-attachment attachment)))))
+       (when shell-session
+         (ignore-errors (del-shell-session shell-session)))))
     (lambda (responder)
       (declare (ignore responder))
       (unwind-protect
            (websocket-driver:start-connection websocket)
-        (when attachment
-          (ignore-errors (del-attachment attachment)))
+        (when shell-session
+          (ignore-errors (del-shell-session shell-session)))
         (when (and output-thread
                    (not (eq output-thread (current-thread))))
           (ignore-errors (join-thread output-thread)))))))
 
+;; Identify Browser requests that request a WebSocket upgrade.
 (defun browser-websocket-p (env)
   "Return true when ENV requests a WebSocket upgrade."
   (and (hash-table-p (getf env :headers))
        (websocket-driver:websocket-p env)))
 
+;; Serve the single ordinary Browser terminal route.
 (defun set-browser-request (env)
-  "Serve the Browser frontend and its WebSocket route."
-  (let* ((path (getf env :path-info))
-         (websocket-p (browser-websocket-p env))
-         (name (get-browser-session-name path)))
-    (cond
-      ((and (stringp path)
-            (not websocket-p)
-            (string= path "/"))
-       (new-browser-response 200
-                         "text/html; charset=utf-8"
-                         (new-browser-index-page)))
-      ((and name)
-       (handler-case
-           (let ((session (get-session name)))
-             (if websocket-p
-                 (set-browser-websocket env session)
-                 (multiple-value-bind (width height)
-                     (get-session-size session)
-                   (new-browser-response 200
-                                     "text/html; charset=utf-8"
-                                     (new-browser-session-page name width height)))))
-         (error ()
-           (new-browser-not-found-response))))
-      (t
-       (new-browser-not-found-response)))))
+  "Serve the Browser terminal and its WebSocket route."
+  (let (;; Read the requested URL path.
+        (path (getf env :path-info))
+        ;; Detect the WebSocket form of the root route.
+        (websocket-p (browser-websocket-p env)))
+    (if (and (stringp path)
+             (string= path "/"))
+        (if websocket-p
+            (set-browser-websocket env)
+            (new-browser-response 200
+                                  "text/html; charset=utf-8"
+                                  (new-browser-terminal-page)))
+        (new-browser-not-found-response))))
 
+;; Start the local Browser terminal server.
 (defun new-browser-server ()
-  "Start the local Browser frontend server."
+  "Start the local Browser terminal server."
   (clack:clackup #'set-browser-request
                  :server :hunchentoot
                  :address +browser-address+
@@ -327,7 +250,8 @@
                  :debug nil
                  :silent t))
 
+;; Stop the local Browser terminal server.
 (defun del-browser-server (server)
-  "Stop the Browser frontend server."
+  "Stop the Browser terminal server."
   (when server
     (clack:stop server)))

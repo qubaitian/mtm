@@ -11,20 +11,20 @@
                 #:del-attachment
                 #:del-session
                 #:del-session-manager
-                #:get-attachment-output
-                #:get-attachment-start-screen
                 #:get-session
                 #:get-session-list
-                #:get-session-size
                 #:get-session-manager
                 #:new-attachment
                 #:new-session
                 #:new-session-manager
                 #:session-application-p
                 #:session-name
-                #:session-running-p
-                #:set-attachment-input
                 #:set-passthrough-frontend)
+  (:import-from #:mtm.pty
+                #:del-shell-session
+                #:get-shell-output-bytes
+                #:new-shell-session
+                #:set-shell-input)
   (:import-from #:mtm.frontend
                 #:set-socket-frontend
                 #:set-frontend-application-mode
@@ -41,7 +41,5 @@
                 #:current-thread
                 #:join-thread
                 #:make-thread)
-  (:import-from #:mtm.terminal
-                #:get-terminal-render)
   (:export
    #:main))

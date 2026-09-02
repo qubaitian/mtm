@@ -1,21 +1,24 @@
 (in-package #:mtm.tests)
 
+;; Check that the Browser terminal page starts as an ordinary terminal.
 (deftest browser-page-loads-xterm-from-cdn ()
-  (let ((page (mtm.app::new-browser-session-page "demo" 80 24)))
+  (let ((page (mtm.app::new-browser-terminal-page)))
     (check (search "@xterm/xterm@5.5.0/lib/xterm.js" page)
            "The Browser page does not load the pinned xterm.js version.")
     (check (search "@xterm/xterm@5.5.0/css/xterm.css" page)
            "The Browser page does not load the pinned xterm.css version.")
     (check (search "const columns = 80;" page)
-           "The Browser page loses the Session width.")
+           "The Browser page loses its default terminal width.")
     (check (search "const rows = 24;" page)
-           "The Browser page loses the Session height.")
+           "The Browser page loses its default terminal height.")
     (check (search "html, body { width: 100%; height: 100%;" page)
            "The Browser page has invalid CSS percentages.")
-    (check (search "event.code === 1008" page)
-           "The Browser page retries a rejected connection.")
+    (check (search "[Shell exited]" page)
+           "The Browser page does not report shell exit.")
     (check (search "new Terminal" page)
-           "The Browser page does not initialize xterm.js.")))
+           "The Browser page does not initialize xterm.js.")
+    (check (not (search "/session/" page))
+           "The Browser page keeps a Session-specific route.")))
 
 (deftest browser-uses-tty-compatible-output-frames ()
   (let ((frame (mtm.app::get-browser-output-frame (get-utf8 "abc"))))
@@ -36,25 +39,29 @@
              "{\"columns\":0,\"rows\":24}")))
          "The Browser accepts an invalid terminal size."))
 
-(deftest browser-serves-session-list-page ()
+;; Check that the Browser root serves the ordinary terminal page.
+(deftest browser-serves-terminal-page ()
   (let ((response
           (mtm.app::set-browser-request
            (list :request-method :get
                  :path-info "/"
                  :headers (make-hash-table :test #'equal)))))
     (check (= 200 (first response))
-           "The Browser index route does not return HTTP 200.")
-    (check (search "MTM sessions" (first (third response)))
-           "The Browser index route returns the wrong page.")))
+           "The Browser terminal route does not return HTTP 200.")
+    (check (search "MTM browser terminal" (first (third response)))
+           "The Browser root returns the wrong page.")
+    (check (not (search "MTM sessions" (first (third response))))
+           "The Browser root still renders a Session list.")))
 
-(deftest browser-returns-404-for-missing-session ()
+;; Check that Browser routes cannot select a Session by URL.
+(deftest browser-rejects-session-route ()
   (let ((response
           (mtm.app::set-browser-request
            (list :request-method :get
                  :path-info "/session/missing"
                  :headers (make-hash-table :test #'equal)))))
     (check (= 404 (first response))
-           "The Browser accepts a missing Session route.")))
+           "The Browser accepts a Session-specific route.")))
 
 (defun get-application-usage-error (operation)
   "Return the usage error for OPERATION."

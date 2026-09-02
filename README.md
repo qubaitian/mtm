@@ -45,9 +45,10 @@ Start the Session manager before other commands.
 ./bin/mtm get session-manager
 ```
 
-The manager starts the Browser frontend at `http://127.0.0.1:7681/`.
-Open that address to list and enter running Sessions.
-The Browser frontend loads xterm.js from its pinned CDN URL.
+The manager makes the Browser terminal available at `http://127.0.0.1:7681/`.
+Open that address to use an ordinary Shell terminal in the browser.
+Use the same `mtm` commands as any other terminal.
+The Browser terminal loads xterm.js from its pinned CDN URL.
 
 The manager state is `running` or `stopped`.
 The `new` operation rejects a running manager.

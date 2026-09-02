@@ -9,7 +9,7 @@ Browser disconnection detaches its Attachment and keeps the Session running.
 
 ## Status
 
-accepted
+superseded by ADR-0017
 
 ## Consequences
 
