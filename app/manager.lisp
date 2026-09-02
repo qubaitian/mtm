@@ -39,6 +39,12 @@
             ((/= byte 13)
              (write-char (code-char byte) output))))))))
 
+;; Return the text after PREFIX in one protocol line.
+(defun get-protocol-tail (line prefix)
+  "Return the text after PREFIX in one protocol line."
+  (when (uiop:string-prefix-p prefix line)
+    (string-trim " " (subseq line (length prefix)))))
+
 (defun del-manager-socket (socket)
   "Close SOCKET without masking an earlier condition."
   (when socket
@@ -132,7 +138,7 @@
 
 ;; Send the manager snapshot through the protocol.
 (defun set-session-manager-response (fd)
-  "Write the Manager state and named Sessions to FD."
+  "Write the Manager state, Sessions, and Services to FD."
   (let ((snapshot (get-session-manager)))
     (set-protocol-line
      fd
@@ -143,8 +149,96 @@
        fd
        (format nil "SESSION ~A ~A"
                (car entry)
-               (get-session-state-name (cdr entry))))))
-  (set-protocol-line fd "END"))
+               (get-session-state-name (cdr entry)))))
+    (dolist (entry (get-service-list))
+      (set-protocol-line
+       fd
+       (format nil "SERVICE ~A ~A"
+               (car entry)
+               (get-session-state-name (cdr entry)))))
+    (set-protocol-line fd "END")))
+
+;; Load one Service source requested by a client.
+(defun new-service-request (fd path)
+  "Load one Service source requested by a client."
+  (unless (and path (plusp (length path)))
+    (error "The manager received an empty Service source path."))
+  (new-service-source path)
+  (set-value-response fd "SERVICE" "loaded"))
+
+;; Return one Service snapshot through the manager protocol.
+(defun set-service-response (fd snapshot)
+  "Write one Service snapshot to FD."
+  (set-protocol-line
+   fd
+   (format nil "SERVICE ~A ~A ~A ~A"
+           (getf snapshot :name)
+           (get-session-state-name (getf snapshot :desired-state))
+           (get-session-state-name (getf snapshot :state))
+           (or (getf snapshot :pid) "nil"))))
+
+;; Handle one Service state query.
+(defun get-service-request (fd parts)
+  "Return the Service requested by PARTS."
+  (unless (protocol-command-p parts "GET" 3)
+    (error "The manager received an invalid Service GET request."))
+  (unless (string= (second parts) "SERVICE")
+    (error "GET requires a Service name."))
+  (set-service-response fd (get-service (third parts))))
+
+;; Keep a read-only Service log connection until the client closes it.
+(defun set-service-log-client (fd)
+  "Keep a read-only Service log connection until the client closes it."
+  (loop
+    (multiple-value-bind (bytes eof-p)
+        (get-fd fd :max-bytes 1 :wait-p t)
+      (declare (ignore bytes))
+      (when eof-p
+        (return)))))
+
+;; Send recent Service output and hold its read-only connection.
+(defun get-service-log-request (fd parts)
+  "Send recent Service output and hold its read-only connection."
+  (unless (protocol-command-p parts "GET" 3)
+    (error "The manager received an invalid Service log request."))
+  (unless (string= (second parts) "SERVICE-LOG")
+    (error "GET requires a Service log name."))
+  (set-protocol-line fd "READY SERVICE")
+  (let ((output (get-service-output (third parts))))
+    (when (plusp (length output))
+      (set-fd fd output)))
+  (set-service-log-client fd))
+
+;; Convert protocol text into one supported Service state.
+(defun get-service-state-value (text)
+  "Convert protocol TEXT into one supported Service state."
+  (let ((state (intern (string-upcase text) "KEYWORD")))
+    (unless (member state '(:running :stopped) :test #'eq)
+      (error "Service state must be RUNNING or STOPPED."))
+    state))
+
+;; Change one Service state requested by a client.
+(defun set-service-request (fd parts)
+  "Change one Service state requested by PARTS."
+  (unless (protocol-command-p parts "SET" 4)
+    (error "The manager received an invalid Service SET request."))
+  (unless (string= (second parts) "SERVICE")
+    (error "SET requires a Service name."))
+  (set-service-response
+   fd
+   (set-service (third parts)
+                (get-service-state-value (fourth parts)))))
+
+;; Delete one Service requested by a client.
+(defun del-service-request (fd parts)
+  "Delete one Service requested by PARTS."
+  (unless (protocol-command-p parts "DEL" 3)
+    (error "The manager received an invalid Service DEL request."))
+  (unless (string= (second parts) "SERVICE")
+    (error "DEL requires a Service name."))
+  (let ((snapshot (del-service (third parts))))
+    (set-value-response fd "SERVICE" (or (getf snapshot :name)
+                                          (third parts)))))
 
 ;; Ensure the named Session requested by one client.
 (defun new-session-request (fd parts)
@@ -224,9 +318,8 @@
     (when stop-function
       (funcall stop-function))))
 
-(defun set-manager-error-response (fd line condition)
-  "Write CONDITION as an error response for LINE."
-  (declare (ignore line))
+(defun set-manager-error-response (fd condition)
+  "Write CONDITION as an error response."
   (ignore-errors
     (set-protocol-line fd (format nil "ERROR ~A" condition))))
 
@@ -236,42 +329,50 @@
   (let ((fd (get-manager-socket-fd socket)))
     (set-socket-sigpipe fd)
     (unwind-protect
-         (let ((line (get-protocol-line fd)))
-           (when line
-             (let ((parts (uiop:split-string line)))
-               (cond
-                 ((protocol-command-p parts "PING" 1)
-                  (set-protocol-line fd "PONG"))
-                 ((protocol-command-p parts "NEW" 3)
-                  (handler-case
-                      (new-session-request fd parts)
-                    (error (condition)
-                      (set-manager-error-response fd line condition))))
-                 ((or (protocol-command-p parts "GET" 2)
-                      (protocol-command-p parts "GET" 3))
-                  (handler-case
-                      (get-session-request fd parts)
-                    (error (condition)
-                      (set-manager-error-response fd line condition))))
-                 ((and (protocol-command-p parts "DEL" 3)
-                       (string= (second parts) "SESSION"))
-                  (handler-case
-                      (del-session-request fd parts)
-                    (error (condition)
-                      (set-manager-error-response fd line condition))))
-                 ((and (protocol-command-p parts "DEL" 2)
-                       (string= (second parts) "SESSION-MANAGER"))
-                  (handler-case
-                      (del-session-manager-request
-                       fd parts stop-function)
-                    (error (condition)
-                      (set-manager-error-response fd line condition))))
-                 (t
-                  (set-manager-error-response
-                   fd line
-                   (make-condition 'simple-error
-                                   :format-control "Invalid manager request."
-                                   :format-arguments nil)))))))
+         (handler-case
+             (let ((line (get-protocol-line fd)))
+               (when line
+                 (let* ((parts (uiop:split-string line))
+                        ;; Preserve source paths that contain spaces.
+                        (service-path
+                          (get-protocol-tail line "NEW SERVICE ")))
+                   (cond
+                     ((protocol-command-p parts "PING" 1)
+                      (set-protocol-line fd "PONG"))
+                     (service-path
+                      (new-service-request fd service-path))
+                     ((protocol-command-p parts "NEW" 3)
+                      (new-session-request fd parts))
+                     ((and (protocol-command-p parts "GET" 3)
+                           (string= (second parts) "SERVICE-LOG"))
+                      (get-service-log-request fd parts))
+                     ((and (protocol-command-p parts "GET" 3)
+                           (string= (second parts) "SERVICE"))
+                      (get-service-request fd parts))
+                     ((or (protocol-command-p parts "GET" 2)
+                          (protocol-command-p parts "GET" 3))
+                      (get-session-request fd parts))
+                     ((and (protocol-command-p parts "SET" 4)
+                           (string= (second parts) "SERVICE"))
+                      (set-service-request fd parts))
+                     ((and (protocol-command-p parts "DEL" 3)
+                           (string= (second parts) "SERVICE"))
+                      (del-service-request fd parts))
+                     ((and (protocol-command-p parts "DEL" 3)
+                           (string= (second parts) "SESSION"))
+                      (del-session-request fd parts))
+                     ((and (protocol-command-p parts "DEL" 2)
+                           (string= (second parts) "SESSION-MANAGER"))
+                      (del-session-manager-request fd parts stop-function))
+                     (t
+                      (set-manager-error-response
+                       fd
+                       (make-condition 'simple-error
+                                       :format-control
+                                       "Invalid manager request."
+                                       :format-arguments nil)))))))
+           (error (condition)
+             (set-manager-error-response fd condition)))
       (del-manager-socket socket))))
 
 (defun new-manager-listener ()
@@ -378,10 +479,11 @@
 
 ;; Read the Manager snapshot returned by SOCKET.
 (defun get-cli-session-manager-values (socket)
-  "Return the Manager state and Sessions from SOCKET."
-  ;; Collect the manager state and its named Session rows.
+  "Return the Manager state, Sessions, and Services from SOCKET."
+  ;; Collect the manager state and its named rows.
   (let ((state nil)
-        (sessions nil))
+        (sessions nil)
+        (services nil))
     (loop for line = (get-protocol-line (get-manager-socket-fd socket))
           do (when (null line)
                (error "The manager closed the state connection."))
@@ -389,12 +491,19 @@
                ((uiop:string-prefix-p "STATE " line)
                 (setf state (subseq line (length "STATE "))))
                ((string= line "END")
-                (return (values state (nreverse sessions))))
+                (return (values state
+                                (nreverse sessions)
+                                (nreverse services))))
                ((uiop:string-prefix-p "SESSION " line)
                 (let ((parts (uiop:split-string line)))
                   (unless (= (length parts) 3)
                     (error "The manager returned an invalid Session."))
                   (push (cons (second parts) (third parts)) sessions)))
+               ((uiop:string-prefix-p "SERVICE " line)
+                (let ((parts (uiop:split-string line)))
+                  (unless (= (length parts) 3)
+                    (error "The manager returned an invalid Service."))
+                  (push (cons (second parts) (third parts)) services)))
                ((uiop:string-prefix-p "ERROR " line)
                 (error "~A" (subseq line (length "ERROR "))))
                (t
@@ -402,7 +511,7 @@
 
 ;; Print the manager snapshot for the CLI.
 (defun get-cli-session-manager ()
-  "Print the Manager state and all named Sessions."
+  "Print the Manager state, Sessions, and Services."
   (if (not (manager-responding-p))
       (format t "state stopped~%")
       (let ((socket (get-manager-connection)))
@@ -411,27 +520,31 @@
                (set-protocol-line
                 (get-manager-socket-fd socket)
                 "GET SESSION-MANAGER")
-               (multiple-value-bind (state sessions)
+               (multiple-value-bind (state sessions services)
                    (get-cli-session-manager-values socket)
                  (format t "state ~A~%" state)
                  (dolist (session sessions)
                    (format t "session ~A ~A~%"
                            (car session)
-                           (cdr session)))))
+                           (cdr session)))
+                 (dolist (service services)
+                   (format t "service ~A ~A~%"
+                           (car service)
+                           (cdr service)))))
           (del-manager-socket socket)))))
 
-;; Read named Session rows for the status bar.
-(defun get-cli-session-list-values ()
-  "Return the named Session list from the Manager."
+;; Read named Session and Service rows for the status bar.
+(defun get-cli-session-manager-lists ()
+  "Return named Session and Service lists from the Manager."
   (let* ((socket (get-manager-connection))
          (fd (get-manager-socket-fd socket)))
     (unwind-protect
          (progn
            (set-protocol-line fd "GET SESSION-MANAGER")
-           (multiple-value-bind (state sessions)
+           (multiple-value-bind (state sessions services)
                (get-cli-session-manager-values socket)
              (declare (ignore state))
-             sessions))
+             (values sessions services)))
       (del-manager-socket socket))))
 
 ;; Open a named Session through the manager.
@@ -468,6 +581,106 @@
       (get-cli-session name)
     (set-client-frontend socket name :full-screen-p full-screen-p)))
 
+;; Load one Service source through the manager.
+(defun new-cli-service-source (path)
+  "Load one Service source through the manager."
+  (new-cli-session-manager-process)
+  (let* ((socket (get-manager-connection))
+         (fd (get-manager-socket-fd socket)))
+    (unwind-protect
+         (progn
+           (set-protocol-line fd (format nil "NEW SERVICE ~A" path))
+           (format t "~A~%" (get-cli-value-response socket "SERVICE")))
+      (del-manager-socket socket))))
+
+;; Open recent output for one named Service.
+(defun get-cli-service-log (name)
+  "Open recent output for one named Service."
+  (let* ((socket (get-manager-connection))
+         (fd (get-manager-socket-fd socket)))
+    (handler-case
+        (progn
+          (set-protocol-line fd (format nil "GET SERVICE-LOG ~A" name))
+          (let* ((response (get-protocol-line fd))
+                 (parts (and response (uiop:split-string response))))
+            (if (and parts
+                     (= (length parts) 2)
+                     (string= (first parts) "READY")
+                     (string= (second parts) "SERVICE"))
+                socket
+                (if (and response (uiop:string-prefix-p "ERROR " response))
+                    (error "~A" (subseq response (length "ERROR ")))
+                    (error "The manager rejected the Service log request.")))))
+      (error (condition)
+        (del-manager-socket socket)
+        (error condition)))))
+
+;; Read one Service state response from SOCKET.
+(defun get-cli-service-response (socket name)
+  "Return one Service state response from SOCKET."
+  (let ((line (get-protocol-line (get-manager-socket-fd socket))))
+    (cond
+      ((null line)
+       (error "The manager closed the Service response connection."))
+      ((uiop:string-prefix-p "ERROR " line)
+       (error "~A" (subseq line (length "ERROR "))))
+      (t
+       (let ((parts (uiop:split-string line)))
+         (unless (and (= (length parts) 5)
+                      (string= (first parts) "SERVICE")
+                      (string= (second parts) name))
+           (error "The manager returned an invalid Service."))
+         (list :name (second parts)
+               :desired-state (third parts)
+               :state (fourth parts)
+               :pid (fifth parts)))))))
+
+;; Print one Service snapshot.
+(defun set-cli-service-output (snapshot)
+  "Print one Service snapshot."
+  (format t "service ~A desired ~A state ~A pid ~A~%"
+          (getf snapshot :name)
+          (getf snapshot :desired-state)
+          (getf snapshot :state)
+          (getf snapshot :pid)))
+
+;; Print one named Service state through the manager.
+(defun get-cli-service (name)
+  "Print one named Service state through the manager."
+  (let* ((socket (get-manager-connection))
+         (fd (get-manager-socket-fd socket)))
+    (unwind-protect
+         (progn
+           (set-protocol-line fd (format nil "GET SERVICE ~A" name))
+           (set-cli-service-output
+            (get-cli-service-response socket name)))
+      (del-manager-socket socket))))
+
+;; Change one named Service state through the manager.
+(defun set-cli-service (name state)
+  "Change one named Service state through the manager."
+  (let* ((socket (get-manager-connection))
+         (fd (get-manager-socket-fd socket)))
+    (unwind-protect
+         (progn
+           (set-protocol-line fd (format nil "SET SERVICE ~A ~A" name state))
+           (set-cli-service-output
+            (get-cli-service-response socket name)))
+      (del-manager-socket socket))))
+
+;; Delete one named Service through the manager.
+(defun del-cli-service (name)
+  "Delete one named Service through the manager."
+  (if (not (manager-responding-p))
+      (format t "~A~%" name)
+      (let* ((socket (get-manager-connection))
+             (fd (get-manager-socket-fd socket)))
+        (unwind-protect
+             (progn
+               (set-protocol-line fd (format nil "DEL SERVICE ~A" name))
+               (format t "~A~%" (get-cli-value-response socket "SERVICE")))
+          (del-manager-socket socket)))))
+
 ;; Stop the manager and print the stopped state.
 (defun del-cli-session-manager ()
   "Stop the Session manager and print its state."
@@ -497,13 +710,15 @@
           (del-manager-socket socket)))))
 
 ;; Run the local frontend around manager SOCKET.
-(defun set-client-frontend (socket name &key (full-screen-p nil))
+(defun set-client-frontend
+    (socket name &key (full-screen-p nil))
   "Run the local frontend around manager SOCKET."
   (let ((active-socket socket)
         (fd (get-manager-socket-fd socket)))
     (set-socket-sigpipe fd)
     (flet ((set-cli-session (frontend new-name)
-             (unless (string= new-name (session-frontend-name frontend))
+             (unless (and (not (session-frontend-service-log-p frontend))
+                          (string= new-name (session-frontend-name frontend)))
                (multiple-value-bind (new-socket new-full-screen-p)
                    (get-cli-session new-name)
                  (let ((new-fd (get-manager-socket-fd new-socket)))
@@ -511,13 +726,34 @@
                    (del-manager-socket active-socket)
                    (setf active-socket new-socket
                          (session-frontend-socket-fd frontend) new-fd
-                         (session-frontend-name frontend) new-name)
-                   (set-frontend-full-screen-mode frontend new-full-screen-p))))))
+                         (session-frontend-name frontend) new-name
+                         (session-frontend-service-log-p frontend) nil
+                         (session-frontend-return-session-name frontend) nil)
+                   (set-frontend-full-screen-mode frontend new-full-screen-p)))))
+           (set-cli-service-view (frontend new-name)
+             (unless (and (session-frontend-service-log-p frontend)
+                          (string= new-name (session-frontend-name frontend)))
+               (let* ((return-name
+                        (or (session-frontend-return-session-name frontend)
+                            (unless (session-frontend-service-log-p frontend)
+                              (session-frontend-name frontend))))
+                      (new-socket (get-cli-service-log new-name))
+                      (new-fd (get-manager-socket-fd new-socket)))
+                 (set-socket-sigpipe new-fd)
+                 (del-manager-socket active-socket)
+                 (setf active-socket new-socket
+                       (session-frontend-socket-fd frontend) new-fd
+                       (session-frontend-name frontend) new-name
+                       (session-frontend-service-log-p frontend) t
+                       (session-frontend-return-session-name frontend)
+                       return-name)
+                 (set-frontend-full-screen-mode frontend nil)))))
       (unwind-protect
            (set-socket-frontend
             fd
             name
-            #'get-cli-session-list-values
+            #'get-cli-session-manager-lists
             #'set-cli-session
+            #'set-cli-service-view
             :full-screen-p full-screen-p)
         (del-manager-socket active-socket)))))

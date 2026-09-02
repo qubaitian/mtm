@@ -7,12 +7,24 @@
 (defvar *session-manager* nil)
 ;; Store the Attachment used by this Lisp process.
 (defvar *active-attachment* nil)
+;; Collect Service declarations while a source file loads.
+(defvar *service-declaration-context* nil)
 
 (defclass session-manager ()
   ((named-sessions
+    ;; Store Shell Sessions by their global names.
     :initform (make-hash-table :test #'equal)
     :accessor manager-named-sessions)
+   (named-services
+    ;; Store Services by their global names.
+    :initform (make-hash-table :test #'equal)
+    :accessor manager-named-services)
+   (service-sources
+    ;; Store loaded Service sources by absolute path.
+    :initform (make-hash-table :test #'equal)
+    :accessor manager-service-sources)
    (lock
+    ;; Protect all manager registries.
     :initform (make-lock "mtm session manager")
     :reader manager-lock)
    (max-buffer-bytes
@@ -21,7 +33,22 @@
    (closed-p
     :initform nil
     :accessor manager-closed-p))
-  (:documentation "Own managed shell sessions and their attachments."))
+  (:documentation "Own managed Sessions, Services, and Attachments."))
+
+;; Store one loaded Service source and its owned names.
+(defclass service-source ()
+  (;; Keep the absolute source path.
+   (path
+    :initarg :path
+    :reader get-service-source-path)
+   ;; Keep the file timestamp used for duplicate loads.
+   (write-date
+    :initarg :write-date
+    :accessor get-service-source-write-date)
+   ;; Keep names declared by this source.
+   (names
+    :initform nil
+    :accessor get-service-source-names)))
 
 ;; Store one named shell Session and its shared display state.
 (defclass managed-session ()
@@ -216,10 +243,13 @@
       (let ((existing-session (gethash name (manager-named-sessions manager))))
         (if existing-session
             (setf managed-session existing-session)
-            (let ((shell-session (new-shell-session :shell shell
-                                                    :width width
-                                                    :height height))
-                  (success-p nil))
+            (progn
+              (when (gethash name (manager-named-services manager))
+                (error "The name ~A already belongs to a Service." name))
+              (let ((shell-session (new-shell-session :shell shell
+                                                      :width width
+                                                      :height height))
+                    (success-p nil))
               ;; Clean up the PTY if Session construction fails.
               (unwind-protect
                    (progn
@@ -242,7 +272,7 @@
                            success-p t))
                 (unless success-p
                   (remhash name (manager-named-sessions manager))
-                  (del-shell-session shell-session)))))))
+                  (del-shell-session shell-session))))))))
     managed-session))
 
 ;; Report whether SESSION accepts Attachments and input.
@@ -570,21 +600,30 @@
         (del-managed-session session)))
     session))
 
+;; Stop every managed Session and Service under MANAGER.
 (defun del-managed-session-manager (manager)
-  "Terminate every Session and stop the manager."
+  "Terminate every Session and Service, then stop the manager."
   (check-type manager session-manager)
-  (let ((sessions nil))
+  (let ((sessions nil)
+        (services nil))
     (with-lock-held ((manager-lock manager))
       (unless (manager-closed-p manager)
         (setf (manager-closed-p manager) t)
         (maphash (lambda (name session)
                    (declare (ignore name))
                    (push session sessions))
-                 (manager-named-sessions manager))))
+                 (manager-named-sessions manager))
+        (maphash (lambda (name service)
+                   (declare (ignore name))
+                   (push service services))
+                 (manager-named-services manager))))
     (mapc #'del-managed-session sessions)
+    (mapc #'del-service-runtime services)
     (with-lock-held ((manager-lock manager))
-      (clrhash (manager-named-sessions manager)))
-    t))
+      (clrhash (manager-named-sessions manager))
+      (clrhash (manager-named-services manager))
+      (clrhash (manager-service-sources manager)))
+  t))
 
 ;; Stop the manager and every named Session.
 (defun del-session-manager ()
@@ -597,3 +636,238 @@
     (when manager
       (del-managed-session-manager manager))
     manager))
+
+;; Validate one Service name.
+(defun get-valid-service-name (name)
+  "Validate one Service name."
+  (unless (valid-session-name-p name)
+    (error "Service names use letters, digits, dots, dashes, and underscores."))
+  name)
+
+;; Validate one Service program and execution context.
+(defun new-service-specification (name program working-directory)
+  "Return a validated Service specification."
+  (get-valid-service-name name)
+  (unless (and (consp program)
+               (every #'stringp program))
+    (error "Service programs must be non-empty string lists."))
+  (when working-directory
+    (check-type working-directory string))
+  (list :name name
+        :program (copy-list program)
+        :working-directory working-directory))
+
+;; Return the managed Service named NAME.
+(defun get-service-value (name)
+  "Return the managed Service named NAME."
+  (get-valid-service-name name)
+  (let ((manager (get-session-manager-value)))
+    (or (when manager
+          (with-lock-held ((manager-lock manager))
+            (unless (manager-closed-p manager)
+              (gethash name (manager-named-services manager)))))
+        (if manager
+            (error "The Service named ~A does not exist." name)
+            (error "The Session manager is stopped.")))))
+
+;; Create one unowned Service value in the manager.
+(defun new-service-value (spec)
+  "Create one unowned Service value in the manager."
+  (let* ((manager (new-session-manager))
+         (name (getf spec :name))
+         (service nil))
+    (with-lock-held ((manager-lock manager))
+      (when (manager-closed-p manager)
+        (error "The Session manager is stopped."))
+      (when (gethash name (manager-named-sessions manager))
+        (error "The name ~A already belongs to a Session." name))
+      (when (gethash name (manager-named-services manager))
+        (error "The Service named ~A already exists." name))
+      (setf service
+            (new-service-runtime
+             name
+             (getf spec :program)
+             (getf spec :working-directory)
+             (manager-max-buffer-bytes manager))
+            (gethash name (manager-named-services manager)) service))
+    service))
+
+;; Declare or immediately create one Service.
+(defun new-service (&key name program working-directory)
+  "Declare or immediately create one Service."
+  (let ((spec (new-service-specification name program working-directory)))
+    (if *service-declaration-context*
+        (progn
+          (push spec (first *service-declaration-context*))
+          name)
+        (get-service-runtime-snapshot (new-service-value spec)))))
+
+;; Return one public Service snapshot.
+(defun get-service (name)
+  "Return one public Service snapshot."
+  (get-service-runtime-snapshot (get-service-value name)))
+
+;; Return all Services and their observed states.
+(defun get-service-list ()
+  "Return all Services and their observed states."
+  (let ((manager (get-session-manager-value)))
+    (when manager
+      (with-lock-held ((manager-lock manager))
+        (sort
+         (loop for service being the hash-values of
+                                   (manager-named-services manager)
+               for snapshot = (get-service-runtime-snapshot service)
+               collect (cons (getf snapshot :name)
+                             (getf snapshot :state)))
+         #'string<
+         :key #'car)))))
+
+;; Return recent output for one Service.
+(defun get-service-output (name)
+  "Return recent output for one Service."
+  (get-service-runtime-output (get-service-value name)))
+
+;; Change one Service's desired lifecycle state.
+(defun set-service (name state)
+  "Change one Service's desired lifecycle state."
+  (unless (member state '(:running :stopped) :test #'eq)
+    (error "Service state must be RUNNING or STOPPED."))
+  (let ((service (get-service-value name)))
+    (set-service-runtime-desired-state service state)
+    (get-service-runtime-snapshot service)))
+
+;; Delete one Service and stop its child process.
+(defun del-service (name)
+  "Delete one Service and stop its child process."
+  (get-valid-service-name name)
+  (let ((manager (get-session-manager-value))
+        (service nil)
+        (snapshot nil))
+    (when manager
+      (with-lock-held ((manager-lock manager))
+        (unless (manager-closed-p manager)
+          (setf service (gethash name (manager-named-services manager)))
+          (when service
+            (setf snapshot (get-service-runtime-snapshot service))
+            (remhash name (manager-named-services manager))))))
+    (when service
+      (del-service-runtime service))
+    snapshot))
+
+;; Return an absolute existing Service source path.
+(defun get-valid-service-source-path (path)
+  "Return an absolute existing Service source path."
+  (check-type path (or string pathname))
+  (let ((pathname (pathname path)))
+    (unless (uiop:absolute-pathname-p pathname)
+      (error "Service source paths must be absolute."))
+    (namestring
+     (or (probe-file pathname)
+         (error "The Service source does not exist: ~A" path)))))
+
+;; Read Service declarations from one trusted Lisp source.
+(defun get-service-source-declarations (path)
+  "Read Service declarations from one trusted Lisp source."
+  (let ((context (list nil)))
+    (let ((*service-declaration-context* context)
+          (*package* (find-package '#:mtm.service-config)))
+      (load path))
+    (nreverse (first context))))
+
+;; Index declarations and reject duplicate names in one source.
+(defun get-service-source-name-table (declarations)
+  "Index declarations and reject duplicate names in one source."
+  (let ((names (make-hash-table :test #'equal)))
+    (dolist (spec declarations names)
+      (let ((name (getf spec :name)))
+        (multiple-value-bind (ignored found-p)
+            (gethash name names)
+          (declare (ignore ignored))
+          (when found-p
+            (error "The Service name ~A is duplicated in one source." name)))
+        (setf (gethash name names) spec)))))
+
+;; Return true when SOURCE still matches the manager registry.
+(defun get-service-source-current-p (manager source write-date)
+  "Return true when SOURCE still matches the manager registry."
+  (and source
+       (= write-date (get-service-source-write-date source))
+       (every
+        (lambda (name)
+          (let ((service (gethash name (manager-named-services manager))))
+            (and service
+                 (equal (get-service-runtime-source-path service)
+                        (get-service-source-path source)))))
+        (get-service-source-names source))))
+
+;; Reconcile one Service source with the manager registry.
+(defun new-service-source (path)
+  "Reconcile one Service source with the manager registry."
+  (let* ((path (get-valid-service-source-path path))
+         (write-date (or (file-write-date path)
+                         (error "The Service source has no write date.")))
+         (manager (new-session-manager))
+         (source nil))
+    (with-lock-held ((manager-lock manager))
+      (when (manager-closed-p manager)
+        (error "The Session manager is stopped."))
+      (setf source (gethash path (manager-service-sources manager)))
+      (when (get-service-source-current-p manager source write-date)
+        (return-from new-service-source path)))
+    (let* ((declarations (get-service-source-declarations path))
+           (names (get-service-source-name-table declarations))
+           (removed-services nil))
+      (with-lock-held ((manager-lock manager))
+        (when (manager-closed-p manager)
+          (error "The Session manager is stopped."))
+        (setf source (gethash path (manager-service-sources manager)))
+        (when (get-service-source-current-p manager source write-date)
+          (return-from new-service-source path))
+        ;; Validate every name before changing any manager value.
+        (maphash
+         (lambda (name spec)
+           (declare (ignore spec))
+           (when (gethash name (manager-named-sessions manager))
+             (error "The name ~A already belongs to a Session." name))
+           (let ((existing (gethash name (manager-named-services manager))))
+             (when (and existing
+                        (not (equal path
+                                    (get-service-runtime-source-path existing))))
+               (error "The Service name ~A already belongs to another source."
+                      name))))
+         names)
+        (unless source
+          (setf source
+                (make-instance 'service-source
+                               :path path
+                               :write-date write-date)))
+        ;; Update declarations owned by this source.
+        (maphash
+         (lambda (name spec)
+           (let ((existing (gethash name (manager-named-services manager))))
+             (if existing
+                 (set-service-runtime-specification
+                  existing
+                  (getf spec :program)
+                  (getf spec :working-directory))
+                 (setf (gethash name (manager-named-services manager))
+                       (new-service-runtime
+                        name
+                        (getf spec :program)
+                        (getf spec :working-directory)
+                        (manager-max-buffer-bytes manager)
+                        :source-path path)))))
+         names)
+        ;; Remove declarations deleted from this source.
+        (dolist (name (get-service-source-names source))
+          (unless (gethash name names)
+            (let ((removed (gethash name (manager-named-services manager))))
+              (when removed
+                (remhash name (manager-named-services manager))
+                (push removed removed-services)))))
+        (setf (get-service-source-write-date source) write-date
+              (get-service-source-names source)
+              (loop for name being the hash-keys of names collect name)
+              (gethash path (manager-service-sources manager)) source))
+      (mapc #'del-service-runtime removed-services))
+    path))

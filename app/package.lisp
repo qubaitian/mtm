@@ -15,9 +15,15 @@
                 #:get-session-list
                 #:get-session-manager
                 #:get-session-size
+                #:get-service
+                #:get-service-list
+                #:get-service-output
                 #:new-attachment
+                #:new-service-source
                 #:session-name
-                #:set-passthrough-frontend)
+                #:set-passthrough-frontend
+                #:set-service
+                #:del-service)
   (:import-from #:mtm.pty
                 #:del-shell-session
                 #:get-shell-output-bytes
@@ -33,6 +39,8 @@
                 #:set-socket-frontend
                 #:set-frontend-full-screen-mode
                 #:session-frontend-name
+                #:session-frontend-return-session-name
+                #:session-frontend-service-log-p
                 #:session-frontend-socket-fd)
   (:import-from #:mtm.platform
                 #:get-fd

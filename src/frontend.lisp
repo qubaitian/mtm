@@ -17,6 +17,7 @@
                       input-fd
                       output-fd
                       sessions
+                      services
                       (full-screen-p nil)
                       (socket-control-p nil)
                       (rows 24)
@@ -28,7 +29,10 @@
   socket-fd
   input-fd
   output-fd
+  ;; Store named shell Session rows.
   sessions
+  ;; Store named Service rows.
+  services
   ;; Track automatic full-screen terminal input.
   (full-screen-p nil)
   (socket-control-p nil)
@@ -36,6 +40,7 @@
   (rows 24 :type integer)
   (columns 80 :type integer)
   (next-refresh 0)
+  ;; Count all rows drawn below the manager row.
   (drawn-session-count 0)
   input-buffer
   (control-buffer
@@ -47,7 +52,14 @@
   (last-full-screen-columns 0)
   (pending-input-since nil)
   (mouse-captured-p nil)
+  ;; Queue the next named shell Session.
   requested-name
+  ;; Queue the next named Service log.
+  requested-service
+  ;; Mark the current view as read-only Service output.
+  (service-log-p nil)
+  ;; Remember the Session to restore from a Service log.
+  return-session-name
   editor
   input-parser
   editor-render)
@@ -182,7 +194,9 @@
 ;; Synchronize FRONTEND with its Session's display state.
 (defun set-frontend-mode-from-session (frontend)
   "Synchronize FRONTEND's mode with its attached Session."
-  (let ((attachment (session-frontend-attachment frontend)))
+  (let ((attachment
+          (unless (session-frontend-service-log-p frontend)
+            (session-frontend-attachment frontend))))
     (when attachment
       (let ((full-screen-p
               (session-full-screen-p (attachment-session attachment))))
@@ -244,18 +258,30 @@
           (get-status-row-text text columns)
           #\Escape))
 
+;; Return display entries for named Sessions and Services.
+(defun get-status-bar-entries (sessions services)
+  "Return display entries for named Sessions and Services."
+  (append
+   (mapcar (lambda (entry)
+             (list :session (car entry) (cdr entry)))
+           sessions)
+   (mapcar (lambda (entry)
+             (list :service (car entry) (cdr entry)))
+           services)))
+
 ;; Render the Session manager status bar.
 (defun get-session-manager-status-bar
     (sessions active-name rows columns expanded-p
-     &optional (previous-session-count 0))
+     &optional (previous-session-count 0) (services nil))
   "Return ANSI output for the Session manager status bar."
-  (let ((visible-session-count
-          (min (max 0 (1- rows)) (length sessions))))
+  (let* ((entries (get-status-bar-entries sessions services))
+         (visible-entry-count
+           (min (max 0 (1- rows)) (length entries))))
     (with-output-to-string (output)
       (format output "~C[s" #\Escape)
-      ;; Clear rows left by a shorter Session list.
+      ;; Clear rows left by a shorter list.
       (when expanded-p
-        (loop for index from (1+ visible-session-count)
+        (loop for index from (1+ visible-entry-count)
                 to (min previous-session-count (max 0 (1- rows)))
               do (format output "~C[~D;1H~C[2K"
                          #\Escape (- rows index) #\Escape)))
@@ -263,10 +289,14 @@
        (get-green-status-row
         rows
         columns
-        (format nil " session-manager: ~D sessions " (length sessions)))
+        (if services
+            (format nil " session-manager: ~D sessions, ~D services "
+                    (length sessions)
+                    (length services))
+            (format nil " session-manager: ~D sessions " (length sessions))))
        output)
       (when expanded-p
-        (loop for entry in sessions
+        (loop for entry in entries
               for index from 1
               while (< index rows)
               for row = (- rows index)
@@ -274,11 +304,17 @@
                   (get-green-status-row
                    row
                    columns
-                   (format nil " ~A [~A] "
-                           (car entry)
-                           (string-downcase (princ-to-string (cdr entry))))
+                   (if (eq (first entry) :service)
+                       (format nil " service ~A [~A] "
+                               (second entry)
+                               (string-downcase
+                                (princ-to-string (third entry))))
+                       (format nil " ~A [~A] "
+                               (second entry)
+                               (string-downcase
+                                (princ-to-string (third entry)))))
                    :bright-p (and active-name
-                                  (string= active-name (car entry))))
+                                  (string= active-name (second entry))))
                   output)))
       (format output "~C[u" #\Escape))))
 
@@ -310,19 +346,27 @@
          (session-frontend-rows frontend)
          (session-frontend-columns frontend)
          (session-frontend-expanded-p frontend)
-         (session-frontend-drawn-session-count frontend))))
+         (session-frontend-drawn-session-count frontend)
+         (session-frontend-services frontend))))
       (setf (session-frontend-drawn-session-count frontend)
             (if (session-frontend-expanded-p frontend)
                 (min (max 0 (1- (session-frontend-rows frontend)))
-                     (length (session-frontend-sessions frontend)))
+                     (+ (length (session-frontend-sessions frontend))
+                        (length (session-frontend-services frontend))))
                 0))
       (set-full-screen-size frontend))))
 
-(defun set-status-bar-sessions (frontend sessions)
-  "Store SESSIONS on FRONTEND and schedule the next refresh."
-  (setf (session-frontend-sessions frontend) sessions
-        (session-frontend-next-refresh frontend)
-        (+ (get-universal-time) +status-refresh-interval+)))
+;; Store Session and Service rows and schedule their next refresh.
+(defun set-status-bar-sessions (frontend list-entries)
+  "Store Session and Service rows and schedule their next refresh."
+  ;; Read current Session and Service rows.
+  (multiple-value-bind (sessions services)
+      (funcall list-entries)
+    (setf (session-frontend-sessions frontend) sessions
+          (session-frontend-services frontend) services
+          (session-frontend-next-refresh frontend)
+          (+ (get-universal-time) +status-refresh-interval+)))
+  frontend)
 
 (defun set-frontend-control (frontend text)
   "Write local terminal control TEXT without sending it to a Session."
@@ -373,30 +417,48 @@
          (format output "~C[u" #\Escape))))
     (setf (session-frontend-drawn-session-count frontend) 0)))
 
-(defun get-status-bar-session-at-row (frontend row)
-  "Return the Session entry under ROW, or NIL."
+;; Return one expanded status entry under ROW, or NIL.
+(defun get-status-bar-entry-at-row (frontend row)
+  "Return one expanded status entry under ROW, or NIL."
   (let* ((rows (session-frontend-rows frontend))
-         (sessions (session-frontend-sessions frontend))
+         (entries
+           (get-status-bar-entries
+            (session-frontend-sessions frontend)
+            (session-frontend-services frontend)))
          (index (- rows row 1)))
     (when (and (session-frontend-expanded-p frontend)
                (< 0 row rows)
                (<= 0 index)
-               (< index (length sessions)))
-      (nth index sessions))))
+               (< index (length entries)))
+      (nth index entries))))
 
+;; Queue NAME as FRONTEND's next Session.
 (defun set-frontend-requested-session (frontend name)
   "Queue NAME as FRONTEND's next Session."
   (when name
     (setf (session-frontend-requested-name frontend) name)))
 
+;; Queue NAME as FRONTEND's next Service log.
+(defun set-frontend-requested-service (frontend name)
+  "Queue NAME as FRONTEND's next Service log."
+  (when name
+    (setf (session-frontend-requested-service frontend) name)))
+
+;; Return the Session name used when leaving a Service log.
+(defun get-frontend-return-session-name (frontend)
+  "Return the Session name used when leaving a Service log."
+  (or (session-frontend-return-session-name frontend)
+      (unless (session-frontend-service-log-p frontend)
+        (session-frontend-name frontend))))
+
+;; Handle one mouse report for the status bar.
 (defun set-status-bar-mouse-event
     (frontend button column row press-p)
   "Handle one mouse report and return true when it belongs to the bar."
   (declare (ignore column))
-  (let ((manager-row (session-frontend-rows frontend))
-        (status-row-p
-          (or (= row (session-frontend-rows frontend))
-              (get-status-bar-session-at-row frontend row))))
+  (let* ((manager-row (session-frontend-rows frontend))
+         ;; Read the status entry under the pointer.
+         (entry (get-status-bar-entry-at-row frontend row)))
     (cond
       ((not (and (= (logand button 3) 0)
                  (zerop (logand button 32))))
@@ -408,16 +470,23 @@
       ((= row manager-row)
        (setf (session-frontend-mouse-captured-p frontend) t)
        (if (session-frontend-expanded-p frontend)
-           (set-frontend-requested-session frontend (session-frontend-name frontend))
+           (set-frontend-requested-session
+            frontend
+            (get-frontend-return-session-name frontend))
            (progn
              (setf (session-frontend-expanded-p frontend) t
                    (session-frontend-next-refresh frontend) 0)
              (set-session-manager-status-bar frontend)
              t)))
       ((and (session-frontend-expanded-p frontend)
-            status-row-p)
+            (eq (first entry) :session))
        (setf (session-frontend-mouse-captured-p frontend) t)
-       (set-frontend-requested-session frontend (car status-row-p))
+       (set-frontend-requested-session frontend (second entry))
+       t)
+      ((and (session-frontend-expanded-p frontend)
+            (eq (first entry) :service))
+       (setf (session-frontend-mouse-captured-p frontend) t)
+       (set-frontend-requested-service frontend (second entry))
        t)
       (t nil))))
 
@@ -672,10 +741,12 @@
     bytes)))
 
 ;; Send input BYTES through full-screen transport or the Editor area.
+;; Send input BYTES through the current frontend mode.
 (defun set-frontend-chunk (frontend bytes)
   "Send BYTES to full-screen transport or the Editor area."
   (cond
     ((or (null bytes) (zerop (length bytes))) nil)
+    ((session-frontend-service-log-p frontend) nil)
     ((session-frontend-full-screen-p frontend)
      (set-session-bytes frontend bytes)
      nil)
@@ -792,7 +863,9 @@
                        (or (= (1+ offset) length)
                            (/= (aref buffer (1+ offset)) 91)))
                   (set-frontend-input-range offset)
-                  (set-frontend-requested-session frontend (session-frontend-name frontend))
+                  (set-frontend-requested-session
+                   frontend
+                   (get-frontend-return-session-name frontend))
                   (incf offset)
                   (setf forward-start offset))
                  (t
@@ -819,15 +892,20 @@
             (make-array 0 :element-type '(unsigned-byte 8))
             (session-frontend-pending-input-since frontend) nil)
       (if (and (not (session-frontend-full-screen-p frontend))
-               (session-frontend-expanded-p frontend))
-          (set-frontend-requested-session frontend (session-frontend-name frontend))
+               (or (session-frontend-expanded-p frontend)
+                   (and (session-frontend-service-log-p frontend)
+                        (get-frontend-return-session-name frontend))))
+          (set-frontend-requested-session
+           frontend
+           (get-frontend-return-session-name frontend))
           (set-frontend-chunk
            frontend
            (make-array 1
                        :element-type '(unsigned-byte 8)
                        :initial-element 27))))))
 
-(defun set-requested-session (frontend list-sessions enter-session)
+;; Enter FRONTEND's queued Session name, if any.
+(defun set-requested-session (frontend list-entries enter-session)
   "Enter FRONTEND's queued Session name, if any."
   (let ((name (session-frontend-requested-name frontend)))
     (when name
@@ -837,13 +915,41 @@
             (funcall enter-session frontend name)
             (setf (session-frontend-expanded-p frontend) nil
                   (session-frontend-drawn-session-count frontend) 0
+                  (session-frontend-requested-service frontend) nil
+                  (session-frontend-service-log-p frontend) nil
+                  (session-frontend-return-session-name frontend) nil
                   (session-frontend-control-buffer frontend)
                   (make-array 0 :element-type '(unsigned-byte 8))
                   (session-frontend-control-since frontend) nil)
             (set-frontend-mode-from-session frontend)
             (set-frontend-editor frontend))
         (error () nil))
-      (set-status-bar-sessions frontend (funcall list-sessions))
+      (set-status-bar-sessions
+       frontend
+       list-entries)
+      (set-session-manager-status-bar frontend))))
+
+;; Enter FRONTEND's queued Service log, if any.
+(defun set-requested-service (frontend list-entries enter-service)
+  "Enter FRONTEND's queued Service log, if any."
+  (let ((name (session-frontend-requested-service frontend)))
+    (when name
+      (setf (session-frontend-requested-service frontend) nil)
+      (handler-case
+          (progn
+            (funcall enter-service frontend name)
+            (setf (session-frontend-expanded-p frontend) nil
+                  (session-frontend-drawn-session-count frontend) 0
+                  (session-frontend-requested-name frontend) nil
+                  (session-frontend-control-buffer frontend)
+                  (make-array 0 :element-type '(unsigned-byte 8))
+                  (session-frontend-control-since frontend) nil)
+            (set-frontend-full-screen-mode frontend nil)
+            (del-frontend-editor frontend))
+        (error () nil))
+      (set-status-bar-sessions
+       frontend
+       list-entries)
       (set-session-manager-status-bar frontend))))
 
 (defun get-frontend-events (frontend)
@@ -866,6 +972,12 @@
   "Forward one available socket chunk and return its end state."
   (multiple-value-bind (bytes eof-p)
       (get-fd (session-frontend-socket-fd frontend) :wait-p nil)
+    (when (session-frontend-service-log-p frontend)
+      (when (and bytes
+                 (plusp (length bytes))
+                 (session-frontend-output-fd frontend))
+        (set-fd (session-frontend-output-fd frontend) bytes))
+      (return-from set-socket-output (values eof-p (plusp (length bytes)))))
     (multiple-value-bind (result activity-p)
         (if (and bytes (plusp (length bytes)))
             (set-mtm-controls
@@ -888,11 +1000,14 @@
         (values eof-p (or activity-p flushed-p))))))
 
 ;; Run the interactive status bar frontend loop.
-(defun set-status-bar-loop (frontend list-sessions enter-session)
+(defun set-status-bar-loop
+    (frontend list-entries enter-session enter-service)
   "Run FRONTEND until its Session source or input ends."
   (loop
-    (set-frontend-mode-from-session frontend)
-    (when (session-frontend-attachment frontend)
+    (unless (session-frontend-service-log-p frontend)
+      (set-frontend-mode-from-session frontend))
+    (when (and (session-frontend-attachment frontend)
+               (not (session-frontend-service-log-p frontend)))
       (multiple-value-bind (eof-p output-p)
           (set-passthrough-output
            (session-frontend-attachment frontend)
@@ -927,15 +1042,19 @@
                 (when (set-session-frontend-input frontend bytes)
                   (return))))))
       (set-pending-frontend-escape frontend)
-      (set-requested-session frontend list-sessions enter-session)
+      (set-requested-service
+       frontend
+       list-entries
+       enter-service)
+      (set-requested-session frontend list-entries enter-session)
       (when (>= (get-universal-time)
                 (session-frontend-next-refresh frontend))
-        (set-status-bar-sessions
-         frontend
-         (funcall list-sessions))
+        (set-status-bar-sessions frontend list-entries)
         (set-session-manager-status-bar frontend)))))
 
-(defun set-status-bar-frontend (frontend list-sessions enter-session)
+;; Run FRONTEND's status bar around its Session source.
+(defun set-status-bar-frontend
+    (frontend list-entries enter-session enter-service)
   "Run FRONTEND's status bar around its Session source."
   (set-raw-input
    (session-frontend-input-fd frontend)
@@ -944,13 +1063,12 @@
           (progn
             (set-frontend-mode-from-session frontend)
             (set-frontend-editor frontend)
-            (set-status-bar-sessions
-             frontend
-             (funcall list-sessions))
+            (set-status-bar-sessions frontend list-entries)
             (set-status-bar-mouse frontend)
             (set-bracketed-paste frontend)
             (set-session-manager-status-bar frontend)
-            (set-status-bar-loop frontend list-sessions enter-session))
+            (set-status-bar-loop
+             frontend list-entries enter-session enter-service))
        (del-frontend-editor-render frontend)
        (del-session-manager-status-bar frontend)
        (del-bracketed-paste frontend)
@@ -974,23 +1092,29 @@
            (when (event-readable-p events socket-fd)
              (multiple-value-bind (bytes eof-p)
                  (get-fd socket-fd :wait-p nil)
-               (when (and bytes (plusp (length bytes)))
-                 (set-mtm-controls
-                  frontend
-                  bytes
-                  (lambda (ordinary)
-                    (when output-fd
-                      (set-fd output-fd ordinary)))
-                  (lambda (payload)
-                    (set-session-mode-control frontend payload))))
+               (if (session-frontend-service-log-p frontend)
+                   (when (and bytes (plusp (length bytes)) output-fd)
+                     (set-fd output-fd bytes))
+                   (when (and bytes (plusp (length bytes)))
+                     (set-mtm-controls
+                      frontend
+                      bytes
+                      (lambda (ordinary)
+                        (when output-fd
+                          (set-fd output-fd ordinary)))
+                      (lambda (payload)
+                        (set-session-mode-control frontend payload)))))
                 (when eof-p
                  (return))))
-           (when (and input-fd (event-readable-p events input-fd))
+           (when (and input-fd
+                      (event-readable-p events input-fd))
              (multiple-value-bind (bytes eof-p)
                  (get-fd input-fd :wait-p nil)
                (if eof-p
                    (return)
-                   (when (and bytes (plusp (length bytes)))
+                   (when (and (not (session-frontend-service-log-p frontend))
+                              bytes
+                              (plusp (length bytes)))
                      (set-session-bytes frontend bytes)))))
            (set-pending-mtm-control-output
             frontend
@@ -999,9 +1123,9 @@
                 (set-fd output-fd ordinary))))))))))
 
 ;; Run a local frontend around a manager socket.
-(defun set-socket-frontend (socket-fd name list-sessions enter-session
-                            &key (input-fd 0) (output-fd 1)
-                              (full-screen-p nil))
+(defun set-socket-frontend
+    (socket-fd name list-entries enter-session enter-service
+     &key (input-fd 0) (output-fd 1) (full-screen-p nil))
   "Run a local frontend for a manager socket."
   (let ((frontend
           (new-session-frontend
@@ -1014,7 +1138,8 @@
              output-fd
              (tty-p input-fd)
              (tty-p output-fd))
-        (set-status-bar-frontend frontend list-sessions enter-session)
+        (set-status-bar-frontend
+         frontend list-entries enter-session enter-service)
         (set-socket-passthrough frontend))))
 
 (defun set-terminal-output (terminal output-fd)
@@ -1098,6 +1223,10 @@
                (string= name
                         (session-name
                          (attachment-session old))))
+      (set-terminal-output
+       (get-attachment-start-screen old)
+       (session-frontend-output-fd frontend))
+      (setf (session-frontend-name frontend) name)
       (return-from set-attachment-session old))
     (let ((new (new-attachment name)))
       (del-frontend-editor frontend)
@@ -1111,6 +1240,26 @@
       (set-terminal-output
        (get-attachment-start-screen new)
        (session-frontend-output-fd frontend)))))
+
+;; Show recent output for NAME while keeping the current Session attached.
+(defun set-attachment-service (frontend name)
+  "Show recent output for NAME while keeping the current Session attached."
+  (let ((attachment (session-frontend-attachment frontend)))
+    (setf (session-frontend-service-log-p frontend) t
+          (session-frontend-return-session-name frontend)
+          (and attachment
+               (session-name (attachment-session attachment)))
+          (session-frontend-name frontend) name)
+    (del-frontend-editor frontend)
+    (set-frontend-full-screen-mode frontend nil)
+    (set-frontend-control
+     frontend
+     (format nil "~C[2J~C[H" #\Escape #\Escape))
+    (let ((output (get-service-output name)))
+      (when (and output
+                 (plusp (length output))
+                 (session-frontend-output-fd frontend))
+        (set-fd (session-frontend-output-fd frontend) output)))))
 
 ;; Run a frontend for one managed Attachment.
 (defun set-passthrough-frontend (&key
@@ -1143,8 +1292,10 @@
            (if tty-frontend-p
                (set-status-bar-frontend
                 frontend
-                #'get-session-list
-                #'set-attachment-session)
+                (lambda ()
+                  (values (get-session-list) (get-service-list)))
+                #'set-attachment-session
+                #'set-attachment-service)
                (set-raw-input
                 input-fd
                 (lambda ()

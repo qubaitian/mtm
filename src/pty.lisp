@@ -1,15 +1,25 @@
 (in-package #:mtm.pty)
 
-(defclass shell-session ()
+;; Store one PTY master and its child process.
+(defclass pty-process ()
   ((master
+    ;; Store the PTY master file descriptor.
     :initarg :master
     :reader pty-master)
    (process-id
+    ;; Store the direct child process identifier.
     :initarg :process-id
     :reader session-process-id)
    (open-p
+    ;; Track whether the PTY still accepts I/O.
     :initform t
     :accessor session-open-p)))
+
+;; Represent one interactive shell inside a PTY.
+(defclass shell-session (pty-process) ())
+
+;; Represent one arbitrary program inside a PTY.
+(defclass process-session (pty-process) ())
 
 ;; Return the shell selected by the environment.
 (defun get-shell ()
@@ -25,6 +35,22 @@
                    :master master
                    :process-id process-id)))
 
+;; Start PROGRAM inside a fixed-size PTY.
+(defun new-process-session (&key program working-directory (width 80) (height 24))
+  "Start PROGRAM inside a fixed-size PTY."
+  (multiple-value-bind (master process-id)
+      (new-pty-process program width height
+                       :working-directory working-directory)
+    (make-instance 'process-session
+                   :master master
+                   :process-id process-id)))
+
+;; Return PROCESS's child process identifier.
+(defun get-process-id (process)
+  "Return PROCESS's child process identifier."
+  (check-type process pty-process)
+  (session-process-id process))
+
 (defun get-open-shell-session (session)
   "Signal an error when SESSION no longer accepts I/O."
   (unless (session-open-p session)
@@ -35,6 +61,13 @@
   "Read PTY bytes and return bytes plus an end-of-file flag."
   (get-open-shell-session session)
   (get-fd (pty-master session) :max-bytes max-bytes :wait-p wait-p))
+
+;; Read raw PTY bytes from PROCESS.
+(defun get-process-output-bytes (process &key (max-bytes 4096) (wait-p t))
+  "Read raw PTY bytes from PROCESS."
+  (unless (session-open-p process)
+    (error "The PTY process is closed."))
+  (get-fd (pty-master process) :max-bytes max-bytes :wait-p wait-p))
 
 (defun valid-byte-vector-p (bytes)
   (and (vectorp bytes)
@@ -65,4 +98,27 @@
           (ignore-errors
             (get-process-status (session-process-id session))))
       (setf (session-open-p session) nil)))
+  t)
+
+;; Stop PROCESS gracefully, then close and reap its PTY child.
+(defun del-process-session (process &key (terminate-p t))
+  "Stop PROCESS gracefully, then close and reap its PTY child."
+  (check-type process process-session)
+  (when (session-open-p process)
+    (setf (session-open-p process) nil)
+    (let ((status nil)
+          (process-id (get-process-id process)))
+      (when terminate-p
+        (set-process-signal process-id 15)
+        (loop repeat 200
+              do (setf status
+                       (get-process-status process-id :no-hang-p t))
+              when status
+                do (return)
+              do (sleep 0.01))
+        (unless status
+          (set-process-signal process-id 9)))
+      (ignore-errors (del-pty (pty-master process)))
+      (unless status
+        (ignore-errors (get-process-status process-id)))))
   t)

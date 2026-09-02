@@ -10,9 +10,8 @@
 ;; Signal the valid CLI forms for one operation.
 (defun set-application-usage-error (operation)
   "Signal the complete usage for an operation."
-  (error "Usage:~%  mtm ~A session-manager~%  mtm ~A session <name>"
-         operation
-         operation))
+  (declare (ignore operation))
+  (error "Usage:~%  mtm new session-manager~%  mtm new session <name>~%  mtm new service <path>~%  mtm get session-manager~%  mtm get session <name>~%  mtm get service <name>~%  mtm set service <name> <state>~%  mtm del session-manager~%  mtm del session <name>~%  mtm del service <name>"))
 
 ;; Dispatch one command using the named Session operations.
 (defun set-application-operation (command)
@@ -30,6 +29,9 @@
            ((and (= (length arguments) 3)
                  (string-equal (second arguments) "SESSION"))
             (new-cli-session (third arguments)))
+           ((and (= (length arguments) 3)
+                 (string-equal (second arguments) "SERVICE"))
+            (new-cli-service-source (third arguments)))
            (t
             (set-application-usage-error "new"))))
         ((string-equal operation "GET")
@@ -43,10 +45,16 @@
              ((and (= (length arguments) 3)
                    (string-equal path "SESSION"))
               (get-cli-session-frontend (third arguments)))
+             ((and (= (length arguments) 3)
+                   (string-equal path "SERVICE"))
+              (get-cli-service (third arguments)))
              (t
               (set-application-usage-error "get")))))
         ((string-equal operation "SET")
-         (error "SET has no supported Session position."))
+         (if (and (= (length arguments) 4)
+                  (string-equal (second arguments) "SERVICE"))
+             (set-cli-service (third arguments) (fourth arguments))
+             (set-application-usage-error "set")))
         ((string-equal operation "DEL")
          (cond
            ((and (= (length arguments) 2)
@@ -55,6 +63,9 @@
            ((and (= (length arguments) 3)
                  (string-equal (second arguments) "SESSION"))
             (del-cli-session (third arguments)))
+           ((and (= (length arguments) 3)
+                 (string-equal (second arguments) "SERVICE"))
+            (del-cli-service (third arguments)))
            (t
             (set-application-usage-error "del"))))
         (t
@@ -64,7 +75,7 @@
 (defun new-application-command ()
   "Return the root command for the MTM application."
   (make-command :name "mtm"
-                :description "Manage named shell Sessions."
+                :description "Manage named shell Sessions and Services."
                 :usage "<new|get|set|del> <path> [value]"
                 :version *version*
                 :handler #'set-application-operation))

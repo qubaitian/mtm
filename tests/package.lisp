@@ -3,14 +3,21 @@
   (:import-from #:mtm
                 #:attachment-attached-p
                 #:del-attachment
+                #:del-service
                 #:del-session
                 #:del-session-manager
+                #:get-service
+                #:get-service-list
+                #:get-service-output
                 #:get-session-list
                 #:get-session-size
                 #:new-attachment
+                #:new-service
+                #:new-service-source
                 #:new-session-manager
                 #:session-name
                 #:session-running-p
+                #:set-service
                 #:get-session-manager)
   (:import-from #:mtm.pty
                 #:del-shell-session

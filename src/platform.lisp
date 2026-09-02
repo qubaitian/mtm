@@ -32,10 +32,12 @@
   (termios :pointer)
   (winsize :pointer))
 
-(defcfun ("execl" %execl) :int
-  (path :string)
-  (arg0 :string)
-  &rest)
+(defcfun ("execvp" %execvp) :int
+  (file :pointer)
+  (argv :pointer))
+
+(defcfun ("chdir" %chdir) :int
+  (path :pointer))
 
 (defcfun ("_exit" %exit) :void
   (status :int))
@@ -220,39 +222,72 @@
     (when (= (%fcntl fd +f-setfd+ :int (logior flags +fd-cloexec+)) -1)
       (set-platform-error "fcntl(F_SETFD)"))))
 
+;; Start PROGRAM inside a non-blocking PTY.
+(defun new-pty-process (program width height &key working-directory)
+  "Start PROGRAM inside a non-blocking PTY."
+  (check-type program cons)
+  (unless (every #'stringp program)
+    (error "PTY programs must contain only strings."))
+  (when working-directory
+    (check-type working-directory string))
+  (check-type width (integer 1))
+  (check-type height (integer 1))
+  (let ((argument-pointers (mapcar #'foreign-string-alloc program))
+        (working-directory-pointer
+          (when working-directory
+            (foreign-string-alloc working-directory)))
+        (argv nil))
+    (unwind-protect
+         (progn
+           ;; Build the null-terminated argv array before forking.
+           (setf argv (foreign-alloc :pointer :count (1+ (length program))))
+           (loop for pointer in argument-pointers
+                 for index from 0
+                 do (setf (mem-aref argv :pointer index) pointer))
+           (setf (mem-aref argv :pointer (length program)) (null-pointer))
+           (with-foreign-object (master :int)
+             (with-foreign-object (winsize '(:struct winsize))
+               (setf (foreign-slot-value winsize '(:struct winsize) 'rows) height
+                     (foreign-slot-value winsize '(:struct winsize) 'columns) width
+                     (foreign-slot-value winsize '(:struct winsize) 'x-pixels) 0
+                     (foreign-slot-value winsize '(:struct winsize) 'y-pixels) 0)
+               (let ((pid (%forkpty master (null-pointer) (null-pointer) winsize)))
+                 (cond
+                   ((= pid 0)
+                    ;; The child changes directory before replacing itself.
+                    (when (and working-directory-pointer
+                               (= (%chdir working-directory-pointer) -1))
+                      (%exit 127))
+                    (%execvp (first argument-pointers) argv)
+                    (%exit 127))
+                   ((minusp pid)
+                    (set-platform-error "forkpty"))
+                   (t
+                    (let ((fd (mem-ref master :int)))
+                      (handler-case
+                          (progn
+                            (set-nonblocking fd)
+                            (set-close-on-exec fd)
+                            (values fd pid))
+                        (error (condition)
+                          (ignore-errors (%close-fd fd))
+                          (ignore-errors (%kill pid +sigkill+))
+                          (ignore-errors
+                            (with-foreign-object (status :int)
+                              (%waitpid pid status 0)))
+                          (error condition))))))))))
+      (when argv
+        (foreign-free argv))
+      (when working-directory-pointer
+        (foreign-string-free working-directory-pointer))
+      (dolist (pointer argument-pointers)
+        (foreign-string-free pointer)))))
+
+;; Start the selected shell inside a non-blocking PTY.
 (defun new-pty (shell width height)
   "Start SHELL inside a non-blocking PTY."
   (check-type shell string)
-  (check-type width (integer 1))
-  (check-type height (integer 1))
-  (with-foreign-object (master :int)
-    (with-foreign-object (winsize '(:struct winsize))
-      (setf (foreign-slot-value winsize '(:struct winsize) 'rows) height
-            (foreign-slot-value winsize '(:struct winsize) 'columns) width
-            (foreign-slot-value winsize '(:struct winsize) 'x-pixels) 0
-            (foreign-slot-value winsize '(:struct winsize) 'y-pixels) 0)
-      (let ((pid (%forkpty master (null-pointer) (null-pointer) winsize)))
-        (cond
-          ((= pid 0)
-           ;; The child keeps the inherited environment and working directory.
-           (%execl shell shell :string "-i" :pointer (null-pointer))
-           (%exit 127))
-          ((minusp pid)
-           (set-platform-error "forkpty"))
-          (t
-           (let ((fd (mem-ref master :int)))
-             (handler-case
-               (progn
-                   (set-nonblocking fd)
-                   (set-close-on-exec fd)
-                   (values fd pid))
-               (error (condition)
-                 (ignore-errors (%close-fd fd))
-                 (ignore-errors (%kill pid +sigkill+))
-                 (ignore-errors
-                   (with-foreign-object (status :int)
-                     (%waitpid pid status 0)))
-                 (error condition))))))))))
+  (new-pty-process (list shell "-i") width height))
 
 ;; Wait for descriptor events and return their readiness flags.
 (defun get-poll-events (descriptors &key (timeout -1))
@@ -345,13 +380,20 @@
                ((and (= result -1) (= (get-errno) +eintr+)) nil)
                (t (set-platform-error "waitpid"))))))
 
+;; Send SIGNAL to PID when the process still exists.
+(defun set-process-signal (pid signal)
+  "Send SIGNAL to PID when the process still exists."
+  (check-type pid integer)
+  (check-type signal integer)
+  (when (and (minusp (%kill pid signal))
+             (/= (get-errno) +esrch+))
+    (set-platform-error "kill"))
+  t)
+
 ;; Send a hangup signal to PID.
 (defun del-process (pid)
   "Send SIGHUP to PID."
-  (when (and (minusp (%kill pid +sighup+))
-             (/= (get-errno) +esrch+))
-    (set-platform-error "kill(SIGHUP)"))
-  t)
+  (set-process-signal pid +sighup+))
 
 (defun set-socket-sigpipe (fd)
   "Prevent a closed socket from terminating the Lisp process."

@@ -58,6 +58,41 @@ It does not list or select a managed Session automatically.
 `get session-manager` prints its state and all named Sessions.
 The stopped result is `state stopped`.
 The running result includes one `session` line per Session.
+It includes one `service` line per Service.
+
+Load one or more named Services from a Lisp source.
+
+```sh
+./bin/mtm new service /absolute/path/services.lisp
+./bin/mtm get service web
+./bin/mtm set service web stopped
+./bin/mtm set service web running
+./bin/mtm del service web
+```
+
+The source file can declare several Services.
+Each Service name must be unique across the manager.
+Session and Service names share one namespace.
+`get service` prints desired state, observed state, and PID.
+`set service` changes only the in-memory desired state.
+`del service` removes the current Service registration.
+Loading the source again can restore a deleted registration.
+
+Use this declaration form.
+
+```lisp
+(mtm:new-service
+ :name "web"
+ :program '("/opt/web/bin/server"
+            "--config"
+            "/etc/web/config.sexp")
+ :working-directory "/srv/web")
+```
+
+`:program` is a non-empty list of strings.
+`:working-directory` is optional.
+The manager inherits its own working directory by default.
+The source file runs as trusted Common Lisp code.
 
 
 Ensure and enter a named Session.
@@ -76,8 +111,11 @@ Both commands require a Session name.
 
 The Session manager status bar stays visible during Terminal use.
 The bar shows the number of running Sessions.
+The bar also shows registered Services.
 Click the bar to expand or collapse Session rows.
 Click a Session row to enter that Session.
+Click a Service row to view recent output.
+Service views accept no input.
 Press `Esc` to collapse expanded rows.
 
 The Editor area intercepts keys before Submission.
@@ -136,6 +174,16 @@ The Session manager is global within one Lisp process.
 (mtm:get-session-list)
 (mtm:del-session "s1")
 (mtm:del-session-manager)
+(mtm:new-service
+ :name "web"
+ :program '("/opt/web/bin/server" "--config" "/etc/web/config.sexp")
+ :working-directory "/srv/web")
+(mtm:get-service "web")
+(mtm:get-service-list)
+(mtm:get-service-output "web")
+(mtm:set-service "web" :stopped)
+(mtm:del-service "web")
+(mtm:new-service-source "/absolute/path/services.lisp")
 ```
 
 `new-session-manager` ensures the process-global manager.
@@ -149,3 +197,10 @@ It then enters the Session through the Terminal frontend.
 `del-session` requires a name and removes that Session.
 `del-session-manager` removes every Session and stops the manager.
 Session values expose no user-editing operation.
+`new-service` creates one Service in a Lisp process.
+`new-service-source` loads several Service declarations atomically.
+`get-service` returns one Service state snapshot.
+`get-service-list` returns Service names and observed states.
+`get-service-output` returns bounded recent output octets.
+`set-service` changes the desired state to `:running` or `:stopped`.
+`del-service` removes one current Service registration.

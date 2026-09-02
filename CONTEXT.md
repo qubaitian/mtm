@@ -14,8 +14,8 @@ The shell selected by the user's `$SHELL` setting.
 _Avoid_: zsh
 
 **Session manager**:
-A process-global registry that owns shell Sessions and their Attachments.
-It lists, selects, and deletes Sessions.
+A process-global registry that owns shell Sessions, Services, and Attachments.
+It controls their lifecycles and lists their names and states.
 It has a `running` or `stopped` Manager state.
 _Avoid_: session service, session daemon
 
@@ -25,7 +25,7 @@ The lifecycle state of the Session manager.
 _Avoid_: service status, process state
 
 **Session name**:
-A required human-readable label for one Session.
+A required human-readable label unique within one Session manager.
 All callers use it to select a Session.
 _Avoid_: process ID
 
@@ -50,6 +50,36 @@ _Avoid_: child pipe
 The end of a Shell session after natural exit or deletion.
 It does not mean Attachment detachment.
 _Avoid_: detachment
+
+## Services
+
+**Service**:
+A named external program managed by the Session manager.
+It is separate from a Shell Session and has no interactive Attachment.
+_Avoid_: Shell Session, session service, daemon
+
+**Service name**:
+A unique human-readable string within one Session manager.
+_Avoid_: process ID, executable name, keyword name
+
+**Service specification**:
+A trusted declaration of one Service's program and execution context.
+_Avoid_: service command, shell command
+
+**Service source**:
+A trusted Lisp file that declares one or more Services.
+Each Service source owns the declarations that it contains.
+_Avoid_: service list, service registry
+
+**Service output**:
+Recent output emitted by a Service.
+It can be viewed without sending input to the Service.
+_Avoid_: Session output, log file
+
+**Service row**:
+A status bar row for one Service.
+Selecting it shows recent Service output without interactive input.
+_Avoid_: Session row, service status line
 
 ## Display
 
@@ -182,7 +212,7 @@ _Avoid_: service position
 
 **Session manager status bar**:
 A local display control at the bottom of one Terminal frontend.
-It shows the number of running Sessions and opens the Session list.
+It shows Sessions and Services with states and opens their rows.
 _Avoid_: status line, session menu
 
 **Session row**:

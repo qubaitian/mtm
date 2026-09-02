@@ -15,7 +15,9 @@
    #:get-system-clipboard
    #:set-close-on-exec
    #:new-pty
+   #:new-pty-process
    #:del-process
+   #:set-process-signal
    #:set-system-clipboard
    #:tty-p
    #:get-process-status
@@ -55,8 +57,10 @@
                 #:get-fd
                 #:set-fd
                 #:new-pty
+                #:new-pty-process
                 #:del-process
                 #:get-process-status
+                #:set-process-signal
                 #:set-terminal-size)
   (:export
    #:del-shell-session
@@ -65,8 +69,40 @@
    #:session-open-p
    #:shell-session
    #:new-shell-session
+   #:del-process-session
+   #:get-process-id
+   #:get-process-output-bytes
+   #:new-process-session
    #:set-shell-input
    #:set-shell-size))
+
+(defpackage #:mtm.service
+  (:use #:cl)
+  (:import-from #:bordeaux-threads
+                #:condition-notify
+                #:condition-wait
+                #:current-thread
+                #:join-thread
+                #:make-condition-variable
+                #:make-lock
+                #:make-thread
+                #:with-lock-held)
+  (:import-from #:mtm.pty
+                #:del-process-session
+                #:get-process-id
+                #:get-process-output-bytes
+                #:new-process-session)
+  (:export
+   #:del-service-runtime
+   #:get-service-runtime-output
+   #:get-service-runtime-source-path
+   #:get-service-runtime-snapshot
+   #:new-service-runtime
+   #:set-service-runtime-desired-state
+   #:set-service-runtime-specification))
+
+(defpackage #:mtm.service-config
+  (:use #:cl))
 
 (defpackage #:mtm.terminal
   (:use #:cl)
@@ -114,6 +150,14 @@
                 #:terminal-width)
   (:import-from #:mtm.utf8
                 #:get-utf8-chunk)
+  (:import-from #:mtm.service
+                #:del-service-runtime
+                #:get-service-runtime-output
+                #:get-service-runtime-source-path
+                #:get-service-runtime-snapshot
+                #:new-service-runtime
+                #:set-service-runtime-desired-state
+                #:set-service-runtime-specification)
   (:intern #:get-shell
            #:get-session-manager-value
            #:get-session-value
@@ -125,6 +169,7 @@
    #:attachment-session
    #:attachment-attached-p
    #:del-attachment
+   #:del-service
    #:del-session
    #:del-session-manager
    #:get-attachment-output
@@ -133,11 +178,17 @@
    #:get-session-list
    #:get-session-size
    #:get-session-manager
+   #:get-service
+   #:get-service-list
+   #:get-service-output
    #:new-attachment
+   #:new-service
+   #:new-service-source
    #:new-session-manager
    #:session-history-box
    #:session-name
    #:session-running-p
+   #:set-service
    #:set-attachment-input
    #:set-attachment-terminal-size))
 
@@ -166,6 +217,8 @@
                 #:get-session-value
                 #:get-session-list
                 #:get-session-size
+                #:get-service-list
+                #:get-service-output
                 #:new-attachment
                 #:new-session-value
                 #:session-full-screen-p
@@ -197,6 +250,8 @@
    #:set-socket-frontend
    #:session-frontend-name
    #:session-frontend-socket-fd
+   #:session-frontend-return-session-name
+   #:session-frontend-service-log-p
    #:set-passthrough-frontend))
 
 (defpackage #:mtm
@@ -210,18 +265,25 @@
                 #:attachment-session
                 #:attachment-attached-p
                 #:del-attachment
+                #:del-service
                 #:del-session
                 #:del-session-manager
                 #:get-session-list
                 #:get-session-size
                 #:get-session-manager
+                #:get-service
+                #:get-service-list
+                #:get-service-output
                 #:get-attachment-output
                 #:get-attachment-start-screen
                 #:get-retained-screen
                 #:new-attachment
+                #:new-service
+                #:new-service-source
                 #:new-session-manager
                 #:session-name
                 #:session-running-p
+                #:set-service
                 #:set-attachment-input
                 #:set-attachment-terminal-size)
   (:export
@@ -229,6 +291,7 @@
    #:attachment-session
    #:attachment-attached-p
    #:del-attachment
+   #:del-service
    #:del-session
    #:del-session-manager
    #:get-attachment-output
@@ -238,11 +301,17 @@
    #:get-session-list
    #:get-session-size
    #:get-session-manager
+   #:get-service
+   #:get-service-list
+   #:get-service-output
    #:new-attachment
+   #:new-service
+   #:new-service-source
    #:new-session
    #:new-session-manager
    #:session-name
    #:session-running-p
+   #:set-service
    #:set-attachment-input
    #:set-attachment-terminal-size
    #:set-passthrough-frontend))
