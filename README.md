@@ -38,13 +38,18 @@ The supported Session operations are `new`, `get`, and `del`.
 
 ```sh
 ./bin/mtm new session-manager
+open http://127.0.0.1:7681/
 ./bin/mtm get session-manager
 ```
 
-The manager makes the Browser terminal available at `http://127.0.0.1:7681/`.
-Open that address to use an ordinary Shell terminal in the browser.
+The manager starts the Browser terminal at `http://127.0.0.1:7681/`.
+The `new session-manager` command does not open a browser.
+Open that address manually to use an ordinary Shell terminal.
+The command prints manager state, not the Browser terminal URL.
 Use the same `mtm` commands as any other terminal.
 The Browser terminal loads xterm.js from its pinned CDN URL.
+The Browser terminal starts one ordinary Shell per browser connection.
+It does not list or select a managed Session automatically.
 `new session-manager` ensures that the manager runs.
 `get session-manager` prints its state and all named Sessions.
 The stopped result is `state stopped`.

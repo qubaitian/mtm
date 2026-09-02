@@ -27,4 +27,5 @@ The manager stops only through `del session-manager` or process failure.
 Restarting the manager loses in-memory Session state.
 
 The manager also hosts the local Browser frontend.
-The Browser frontend lists and enters named Sessions.
+The original Browser frontend listed and entered named Sessions.
+ADR-0017 supersedes that Browser behavior.
