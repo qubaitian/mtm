@@ -343,16 +343,20 @@
    (format nil "~C[?2004l" #\Escape)))
 
 (defun set-status-bar-mouse (frontend)
-  "Enable SGR mouse reports for the local frontend."
+  ;; Enable compatible terminal mouse reports for FRONTEND.
+  "Enable compatible mouse reports for the local frontend."
   (set-frontend-control
    frontend
-   (format nil "~C[?1002h~C[?1006h" #\Escape #\Escape)))
+   (format nil "~C[?1000h~C[?1002h~C[?1006h"
+           #\Escape #\Escape #\Escape)))
 
 (defun del-status-bar-mouse (frontend)
-  "Disable SGR mouse reports after the frontend stops."
+  ;; Disable compatible terminal mouse reports after FRONTEND stops.
+  "Disable compatible mouse reports after the frontend stops."
   (set-frontend-control
    frontend
-   (format nil "~C[?1006l~C[?1002l" #\Escape #\Escape)))
+   (format nil "~C[?1006l~C[?1002l~C[?1000l"
+           #\Escape #\Escape #\Escape)))
 
 (defun del-session-manager-status-bar (frontend)
   "Clear FRONTEND's drawn status rows before frontend shutdown."
@@ -423,9 +427,11 @@
     (ignore-errors
       (parse-integer (map 'string #'code-char (subseq bytes start end))))))
 
+;; Collect the numeric fields needed by SGR mouse parsing.
 (defun get-sgr-mouse-fields (bytes start end)
   "Parse semicolon-separated SGR mouse fields."
-  (let ((fields nil)
+  (let (;; Collect every numeric field before selecting coordinates.
+        (fields nil)
         (field-start start))
     (loop for index from start below end
           when (= (aref bytes index) (char-code #\;))
@@ -436,18 +442,20 @@
     (nreverse fields)))
 
 (defun get-sgr-mouse-report (bytes start)
+  ;; Parse one SGR report without changing its raw byte boundaries.
   "Parse an SGR mouse report beginning at START."
   (unless (and (<= (+ start 3) (length bytes))
                (= (aref bytes start) 27)
                (= (aref bytes (1+ start)) 91)
                (= (aref bytes (+ start 2)) 60))
     (return-from get-sgr-mouse-report (values :not-a-report start)))
+  ;; Scan bytes until a complete SGR terminator appears.
   (loop for end from (+ start 3) below (length bytes)
         for byte = (aref bytes end)
         when (or (= byte (char-code #\M))
                  (= byte (char-code #\m)))
           do (let ((fields (get-sgr-mouse-fields bytes (+ start 3) end)))
-               (if (and (= (length fields) 3)
+               (if (and (>= (length fields) 3)
                         (every #'integerp fields))
                    (return-from get-sgr-mouse-report
                      (values :event
@@ -459,6 +467,43 @@
                    (return-from get-sgr-mouse-report
                      (values :invalid (1+ end)))))
         finally (return (values :incomplete start))))
+
+(defun get-legacy-mouse-report (bytes start)
+  ;; Parse one six-byte legacy mouse report beginning at START.
+  "Parse a legacy X10 mouse report beginning at START."
+  (unless (and (<= (+ start 3) (length bytes))
+               (= (aref bytes start) 27)
+               (= (aref bytes (1+ start)) 91)
+               (= (aref bytes (+ start 2)) 77))
+    (return-from get-legacy-mouse-report (values :not-a-report start)))
+  (let (;; Keep the complete report boundary for forwarding.
+        (report-end (+ start 6)))
+    (if (> report-end (length bytes))
+        (values :incomplete start)
+        (let* (;; Read the encoded button and modifier flags.
+               (encoded-button (aref bytes (+ start 3)))
+               ;; Read the encoded one-based terminal column.
+               (encoded-column (aref bytes (+ start 4)))
+               ;; Read the encoded one-based terminal row.
+               (encoded-row (aref bytes (+ start 5)))
+               ;; Remove the protocol offset from the button byte.
+               (button (- encoded-button 32))
+               ;; Remove the protocol offset from the column byte.
+               (column (- encoded-column 32))
+               ;; Remove the protocol offset from the row byte.
+               (row (- encoded-row 32)))
+          (if (and (>= encoded-button 32)
+                   (plusp column)
+                   (plusp row))
+              (values :event report-end
+                      ;; Normalize the legacy release marker for local handlers.
+                      (if (= (logand button 3) 3)
+                          (logand button -4)
+                          button)
+                      column
+                      row
+                      (/= (logand button 3) 3))
+              (values :invalid report-end))))))
 
 (defun set-session-bytes (frontend bytes)
   "Write BYTES to FRONTEND's Session source."
@@ -673,18 +718,23 @@
      (set-frontend-full-screen-mode frontend nil))
     (t nil)))
 
-;; Route local input to the status bar, Editor, or Session.
-(defun set-session-frontend-input (frontend bytes)
-  "Consume status bar input, then the Editor area. Return true to detach."
-  (let* ((buffer
-           (concatenate '(vector (unsigned-byte 8))
-                        (session-frontend-input-buffer frontend)
-                        bytes))
+;; Route local input, including complete mouse reports, to its destination.
+(defun set-session-frontend-input (frontend bytes &key (status-bar-p t))
+  "Route input to local controls, the Editor area, or the Session."
+  (let* (;; Combine bytes split across frontend reads.
+         (buffer (concatenate '(vector (unsigned-byte 8))
+                              (session-frontend-input-buffer frontend)
+                              bytes))
+         ;; Cache the combined input length for the scan.
          (length (length buffer))
+         ;; Track the next byte that still needs classification.
          (offset 0)
+         ;; Track the start of bytes sent to ordinary input.
          (forward-start 0)
+         ;; Remember whether ordinary input requested detachment.
          (detach-p nil))
-    (labels ((set-frontend-input-range (end)
+    (labels (;; Forward ordinary bytes before the next special report.
+             (set-frontend-input-range (end)
                (when (> end forward-start)
                  (when (set-frontend-chunk
                         frontend
@@ -696,21 +746,31 @@
                  ((and (= (aref buffer offset) 27)
                        (<= (+ offset 3) length)
                        (= (aref buffer (1+ offset)) 91)
-                       (= (aref buffer (+ offset 2)) 60))
+                       (or (= (aref buffer (+ offset 2)) 60)
+                           (= (aref buffer (+ offset 2)) 77)))
                   (set-frontend-input-range offset)
+                  ;; Decode one complete report and route its semantic event.
                   (multiple-value-bind (kind end button column row press-p)
-                      (get-sgr-mouse-report buffer offset)
+                      (if (= (aref buffer (+ offset 2)) 60)
+                          (get-sgr-mouse-report buffer offset)
+                          (get-legacy-mouse-report buffer offset))
                     (case kind
                       (:incomplete (return))
                       (:event
-                       (unless (or (set-status-bar-mouse-event
-                                    frontend button column row press-p)
-                                   (set-editor-mouse-event
-                                    frontend button column row press-p))
-                         (when (set-frontend-chunk
-                                frontend
-                                (subseq buffer offset end))
-                           (setf detach-p t)))
+                       (if (session-frontend-full-screen-p frontend)
+                           (when (set-frontend-chunk
+                                  frontend
+                                  (subseq buffer offset end))
+                             (setf detach-p t))
+                           (unless (or (and status-bar-p
+                                            (set-status-bar-mouse-event
+                                             frontend button column row press-p))
+                                       (set-editor-mouse-event
+                                        frontend button column row press-p))
+                             (when (set-frontend-chunk
+                                    frontend
+                                    (subseq buffer offset end))
+                               (setf detach-p t))))
                        (setf offset end
                              forward-start end))
                       (:invalid
@@ -977,6 +1037,7 @@
           ((or (null bytes) (zerop (length bytes)))
            (return (values nil output-p))))))))
 
+;; Run attachment input through the shared mouse parser.
 (defun set-attachment-loop (frontend)
   "Run FRONTEND until its Attachment or input ends."
   (set-frontend-editor frontend)
@@ -1012,7 +1073,8 @@
                        frontend
                        bytes
                        (lambda (ordinary)
-                         (set-frontend-chunk frontend ordinary))
+                         (set-session-frontend-input
+                          frontend ordinary :status-bar-p nil))
                        (lambda (payload)
                          (set-frontend-control-event frontend payload)))
                     (declare (ignore ignored))
@@ -1022,7 +1084,8 @@
               (set-pending-mtm-control-output
                frontend
                (lambda (ordinary)
-                 (set-frontend-chunk frontend ordinary)))
+                 (set-session-frontend-input
+                  frontend ordinary :status-bar-p nil)))
             (declare (ignore ignored))
             (when result
               (return)))))))

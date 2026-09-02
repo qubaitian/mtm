@@ -131,6 +131,18 @@ _Avoid_: live output text
 A byte sequence that changes terminal display or cursor state.
 _Avoid_: escape string
 
+## Mouse input
+
+**Mouse report**:
+A terminal input sequence that describes a mouse action and cell coordinates.
+A Terminal frontend consumes it locally or forwards it unchanged.
+_Avoid_: mouse command
+
+**Mouse tracking**:
+A terminal mode that requests Mouse reports from the Terminal frontend.
+It applies while the local status bar is active.
+_Avoid_: mouse capture
+
 ## Data operations
 
 **Data operation**:

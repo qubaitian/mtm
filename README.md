@@ -31,6 +31,10 @@ sbcl --noinform --load init --eval '(asdf:make "mtm/app")' --quit
 
 The build writes the executable to `bin/mtm`.
 
+The detached Session manager keeps its executable loaded.
+Restart it after rebuilding MTM.
+Restarting the manager removes every managed Session.
+
 ## Run
 
 Session commands use separate operation and path arguments.
@@ -84,6 +88,9 @@ Up walks Session History after Reattachment.
 The overlay starts at column 0 and covers the prompt.
 Live PTY output stays raw octets.
 Click and drag in the Editor area to select text.
+The Terminal frontend accepts SGR and legacy mouse reports.
+Full-screen applications receive their mouse reports unchanged.
+The Browser terminal leaves mouse selection to xterm.js.
 Use `Command-X` to cut, `Command-C` to copy, and `Delete` to remove selection.
 Use `Command-V` to replace selection or insert Pasted content.
 Command shortcuts need terminal support for the Kitty keyboard protocol.

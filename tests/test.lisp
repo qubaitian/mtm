@@ -237,6 +237,42 @@
                   press-p)
              "The frontend does not parse an SGR left click."))))
 
+(deftest status-bar-parses-legacy-left-click ()
+  (let ((bytes (new-test-octets 27 91 77 32 39 41)))
+    (multiple-value-bind (kind end button column row press-p)
+        (mtm.frontend::get-legacy-mouse-report bytes 0)
+      (check (and (eq kind :event)
+                  (= end (length bytes))
+                  (= button 0)
+                  (= column 7)
+                  (= row 9)
+                  press-p)
+             "The frontend does not parse a legacy left click."))))
+
+(deftest status-bar-parses-legacy-release ()
+  (let ((bytes (new-test-octets 27 91 77 35 39 41)))
+    (multiple-value-bind (kind end button column row press-p)
+        (mtm.frontend::get-legacy-mouse-report bytes 0)
+      (check (and (eq kind :event)
+                  (= end (length bytes))
+                  (= button 0)
+                  (= column 7)
+                  (= row 9)
+                  (not press-p))
+             "The frontend does not parse a legacy release."))))
+
+(deftest status-bar-parses-sgr-extra-fields ()
+  (let ((bytes (get-utf8 (format nil "~C[<0;7;9;0M" #\Escape))))
+    (multiple-value-bind (kind end button column row press-p)
+        (mtm.frontend::get-sgr-mouse-report bytes 0)
+      (check (and (eq kind :event)
+                  (= end (length bytes))
+                  (= button 0)
+                  (= column 7)
+                  (= row 9)
+                  press-p)
+             "The frontend rejects an extended SGR mouse report."))))
+
 (deftest status-bar-renders-session-rows ()
   (let ((collapsed
           (mtm.frontend::get-session-manager-status-bar
@@ -295,6 +331,23 @@
      (subseq bytes 1))
     (check (mtm.frontend::session-frontend-expanded-p frontend)
            "The frontend loses a split mouse report.")))
+
+(deftest status-bar-parses-split-legacy-mouse-report ()
+  (let* ((frontend
+           (mtm.frontend::new-session-frontend
+            :name "alpha"
+            :rows 6
+            :columns 32
+            :sessions '(("alpha" . :running))))
+         (bytes (new-test-octets 27 91 77 32 33 38)))
+    (mtm.frontend::set-session-frontend-input
+     frontend
+     (subseq bytes 0 4))
+    (mtm.frontend::set-session-frontend-input
+     frontend
+     (subseq bytes 4))
+    (check (mtm.frontend::session-frontend-expanded-p frontend)
+           "The frontend loses a split legacy mouse report.")))
 
 (deftest frontend-strips-split-full-screen-mode-control ()
   (let* ((frontend
@@ -370,6 +423,25 @@
            (funcall function)
            bytes)
       (setf (symbol-function 'mtm.platform:set-fd) original))))
+
+(deftest status-bar-enables-compatible-mouse-tracking ()
+  (let ((frontend (mtm.frontend::new-session-frontend :output-fd 1)))
+    (check (equalp
+            (capture-platform-output
+             (lambda ()
+               (mtm.frontend::set-status-bar-mouse frontend)))
+            (get-utf8
+             (format nil "~C[?1000h~C[?1002h~C[?1006h"
+                     #\Escape #\Escape #\Escape)))
+           "The frontend enables compatible mouse tracking.")
+    (check (equalp
+            (capture-platform-output
+             (lambda ()
+               (mtm.frontend::del-status-bar-mouse frontend)))
+            (get-utf8
+             (format nil "~C[?1006l~C[?1002l~C[?1000l"
+                     #\Escape #\Escape #\Escape)))
+           "The frontend disables compatible mouse tracking.")))
 
 (deftest editor-area-stays-above-status-bar ()
   (let* ((terminal (new-terminal-emulator :width 4 :height 4))
@@ -672,7 +744,7 @@
                    (new-test-octets 108 115))
            "The Editor area must keep keys before Submission.")))
 
-(deftest frontend-consumes-editor-mouse-reports ()
+(deftest frontend-consumes-editor-mouse-reports-without-status-bar ()
   (let* ((editor (mtm.editor:new-editor))
          (frontend
            (mtm.frontend::new-session-frontend
@@ -689,10 +761,52 @@
      frontend
      (get-utf8
       (format nil "~C[<0;1;1M~C[<32;6;1M~C[<0;6;1m"
-              #\Escape #\Escape #\Escape)))
+              #\Escape #\Escape #\Escape))
+     :status-bar-p nil)
     (check (string= "hello"
                     (mtm.editor:get-editor-selection-text editor))
            "The frontend must consume Editor area mouse reports.")))
+
+(deftest frontend-consumes-legacy-editor-mouse-reports ()
+  (let* ((editor (mtm.editor:new-editor))
+         (frontend
+           (mtm.frontend::new-session-frontend
+            :rows 24
+            :columns 32))
+         (render nil))
+    (mtm.editor::set-editor-buffer-octets editor (get-utf8 "hello"))
+    (setf render (mtm.editor:set-editor-render editor nil 32 24 0))
+    (setf (mtm.frontend::session-frontend-editor frontend) editor
+          (mtm.frontend::session-frontend-input-parser frontend)
+          (mtm.editor:new-input-parser)
+          (mtm.frontend::session-frontend-editor-render frontend) render)
+    (mtm.frontend::set-session-frontend-input
+     frontend
+     (new-test-octets
+      27 91 77 32 33 33
+      27 91 77 64 38 33
+      27 91 77 35 38 33))
+    (check (and (equalp (mtm.editor::get-editor-buffer editor)
+                        (get-utf8 "hello"))
+                (string= "hello"
+                         (mtm.editor:get-editor-selection-text editor))
+                (not (mtm.editor::get-editor-mouse-selecting-p editor)))
+           "The frontend must consume legacy Editor mouse reports.")))
+
+(deftest frontend-forwards-full-screen-mouse-reports ()
+  (let* ((frontend
+           (mtm.frontend::new-session-frontend
+            :socket-fd 9
+            :full-screen-p t))
+         (editor (mtm.editor:new-editor))
+         (bytes (get-utf8 (format nil "~C[<0;1;1M" #\Escape))))
+    (setf (mtm.frontend::session-frontend-editor frontend) editor)
+    (check (equalp
+            (capture-platform-output
+             (lambda ()
+               (mtm.frontend::set-session-frontend-input frontend bytes)))
+            bytes)
+           "The full-screen frontend must forward mouse reports.")))
 
 
 (defun session-value-or-nil (name)
