@@ -8,6 +8,7 @@
 (defparameter +mtm-control-prefix+
   (get-utf8 (format nil "~C]MTM;" #\Escape)))
 
+;; Store local input and transport state for one frontend.
 (defstruct (session-frontend
             (:constructor new-session-frontend
                 (&key name
@@ -16,7 +17,7 @@
                       input-fd
                       output-fd
                       sessions
-                      (application-p nil)
+                      (full-screen-p nil)
                       (socket-control-p nil)
                       (rows 24)
                       (columns 80)
@@ -28,7 +29,8 @@
   input-fd
   output-fd
   sessions
-  (application-p nil)
+  ;; Track automatic full-screen terminal input.
+  (full-screen-p nil)
   (socket-control-p nil)
   expanded-p
   (rows 24 :type integer)
@@ -39,8 +41,10 @@
   (control-buffer
    (make-array 0 :element-type '(unsigned-byte 8)))
   (control-since nil)
-  (last-application-rows 0)
-  (last-application-columns 0)
+  ;; Cache the last full-screen PTY size.
+  (last-full-screen-rows 0)
+  ;; Cache the last full-screen PTY width.
+  (last-full-screen-columns 0)
   (pending-input-since nil)
   (mouse-captured-p nil)
   requested-name
@@ -162,32 +166,34 @@
              (format nil "~C]MTM;~A~C"
                      #\Escape payload (code-char 7))))))
 
-(defun set-frontend-application-mode (frontend application-p)
-  "Set FRONTEND's local Application passthrough state."
-  (let ((application-p (not (null application-p))))
-    (setf (session-frontend-last-application-rows frontend) 0
-          (session-frontend-last-application-columns frontend) 0)
-    (unless (eql application-p (session-frontend-application-p frontend))
-      (setf (session-frontend-application-p frontend) application-p)
-      (if application-p
+;; Synchronize FRONTEND with automatic full-screen transport.
+(defun set-frontend-full-screen-mode (frontend full-screen-p)
+  "Set FRONTEND's automatic full-screen input state."
+  (let ((full-screen-p (not (null full-screen-p))))
+    (setf (session-frontend-last-full-screen-rows frontend) 0
+          (session-frontend-last-full-screen-columns frontend) 0)
+    (unless (eql full-screen-p (session-frontend-full-screen-p frontend))
+      (setf (session-frontend-full-screen-p frontend) full-screen-p)
+      (if full-screen-p
           (del-frontend-editor-render frontend)
           (set-frontend-editor frontend)))
-    application-p))
+    full-screen-p))
 
+;; Synchronize FRONTEND with its Session's display state.
 (defun set-frontend-mode-from-session (frontend)
   "Synchronize FRONTEND's mode with its attached Session."
   (let ((attachment (session-frontend-attachment frontend)))
     (when attachment
-      (let ((application-p
-              (session-application-p (attachment-session attachment))))
-        (unless (eql application-p
-                     (session-frontend-application-p frontend))
-          (set-frontend-application-mode frontend application-p)
+      (let ((full-screen-p
+              (session-full-screen-p (attachment-session attachment))))
+        (unless (eql full-screen-p
+                     (session-frontend-full-screen-p frontend))
+          (set-frontend-full-screen-mode frontend full-screen-p)
           (when (session-frontend-socket-control-p frontend)
             (set-mtm-control
              (session-frontend-output-fd frontend)
              (format nil "mode;~A"
-                     (if application-p "application" "editor"))))))))
+                     (if full-screen-p "full-screen" "editor"))))))))
   frontend)
 
 (defun get-status-bar-row-count (frontend)
@@ -196,15 +202,16 @@
           (session-frontend-drawn-session-count frontend)
           0)))
 
-(defun set-application-size (frontend)
+;; Reserve status rows when FRONTEND uses full-screen transport.
+(defun set-full-screen-size (frontend)
   "Keep the PTY below FRONTEND's reserved status bar rows."
-  (when (session-frontend-application-p frontend)
+  (when (session-frontend-full-screen-p frontend)
     (let ((rows (max 1 (- (session-frontend-rows frontend)
                           (get-status-bar-row-count frontend))))
           (columns (session-frontend-columns frontend)))
-      (unless (and (= rows (session-frontend-last-application-rows frontend))
+      (unless (and (= rows (session-frontend-last-full-screen-rows frontend))
                    (= columns
-                      (session-frontend-last-application-columns frontend)))
+                      (session-frontend-last-full-screen-columns frontend)))
         (cond
           ((session-frontend-attachment frontend)
            (set-attachment-terminal-size
@@ -214,8 +221,8 @@
            (set-mtm-control
             (session-frontend-socket-fd frontend)
             (format nil "resize;~D;~D" rows columns))))
-        (setf (session-frontend-last-application-rows frontend) rows
-              (session-frontend-last-application-columns frontend) columns))))
+        (setf (session-frontend-last-full-screen-rows frontend) rows
+              (session-frontend-last-full-screen-columns frontend) columns))))
   frontend)
 
 (defun get-status-row-text (text columns)
@@ -237,8 +244,9 @@
           (get-status-row-text text columns)
           #\Escape))
 
+;; Render the Session manager status bar.
 (defun get-session-manager-status-bar
-    (sessions current-name rows columns expanded-p
+    (sessions active-name rows columns expanded-p
      &optional (previous-session-count 0))
   "Return ANSI output for the Session manager status bar."
   (let ((visible-session-count
@@ -269,8 +277,8 @@
                    (format nil " ~A [~A] "
                            (car entry)
                            (string-downcase (princ-to-string (cdr entry))))
-                   :bright-p (and current-name
-                                  (string= current-name (car entry))))
+                   :bright-p (and active-name
+                                  (string= active-name (car entry))))
                   output)))
       (format output "~C[u" #\Escape))))
 
@@ -287,6 +295,7 @@
         (error () nil))))
   frontend)
 
+;; Draw the status bar and update the full-screen PTY size.
 (defun set-session-manager-status-bar (frontend)
   "Draw FRONTEND's local Session manager status bar."
   (let ((output-fd (session-frontend-output-fd frontend)))
@@ -307,7 +316,7 @@
                 (min (max 0 (1- (session-frontend-rows frontend)))
                      (length (session-frontend-sessions frontend)))
                 0))
-      (set-application-size frontend))))
+      (set-full-screen-size frontend))))
 
 (defun set-status-bar-sessions (frontend sessions)
   "Store SESSIONS on FRONTEND and schedule the next refresh."
@@ -490,8 +499,9 @@
           1
           (session-frontend-drawn-session-count frontend))))
 
+;; Read the retained terminal cursor row for FRONTEND.
 (defun get-frontend-terminal-cursor-row (frontend)
-  "Return the current terminal cursor row for FRONTEND."
+  "Return the terminal cursor row for FRONTEND."
   (let ((attachment (session-frontend-attachment frontend)))
     (if attachment
         (handler-case
@@ -510,13 +520,14 @@
       (del-editor-render render (session-frontend-output-fd frontend))
       (setf (session-frontend-editor-render frontend) nil))))
 
+;; Draw the Editor area unless full-screen transport is active.
 (defun set-frontend-editor-render (frontend)
   "Draw FRONTEND's Editor area at column 0."
   (let ((editor (session-frontend-editor frontend))
         (output-fd (session-frontend-output-fd frontend)))
     (when (and editor
                output-fd
-               (not (session-frontend-application-p frontend)))
+               (not (session-frontend-full-screen-p frontend)))
       (if (editor-empty-p editor)
           (del-frontend-editor-render frontend)
           (progn
@@ -615,11 +626,12 @@
     (session-frontend-input-parser frontend)
     bytes)))
 
+;; Send input BYTES through full-screen transport or the Editor area.
 (defun set-frontend-chunk (frontend bytes)
-  "Send BYTES to Application passthrough or the Editor area."
+  "Send BYTES to full-screen transport or the Editor area."
   (cond
     ((or (null bytes) (zerop (length bytes))) nil)
-    ((session-frontend-application-p frontend)
+    ((session-frontend-full-screen-p frontend)
      (set-session-bytes frontend bytes)
      nil)
     ((session-frontend-editor frontend)
@@ -628,7 +640,8 @@
      (set-session-bytes frontend bytes)
      nil)))
 
-(defun get-application-resize-control (payload)
+;; Parse a resize control payload.
+(defun get-resize-control (payload)
   "Return row and column counts from a resize control payload."
   (let* ((prefix "resize;")
          (start (length prefix))
@@ -641,23 +654,26 @@
           (when (and (plusp rows) (plusp columns))
             (values rows columns)))))))
 
+;; Apply one resize control received from a manager.
 (defun set-frontend-control-event (frontend payload)
   "Apply one manager control received from a local frontend."
   (multiple-value-bind (rows columns)
-      (get-application-resize-control payload)
+      (get-resize-control payload)
     (when (and rows columns (session-frontend-attachment frontend))
       (set-attachment-terminal-size
        (session-frontend-attachment frontend) rows columns))))
 
-(defun set-application-mode-control (frontend payload)
-  "Apply one Application mode control received from the manager."
+;; Apply a Session transport control from the manager.
+(defun set-session-mode-control (frontend payload)
+  "Apply one Session mode control received from the manager."
   (cond
-    ((string= payload "mode;application")
-     (set-frontend-application-mode frontend t))
+    ((string= payload "mode;full-screen")
+     (set-frontend-full-screen-mode frontend t))
     ((string= payload "mode;editor")
-     (set-frontend-application-mode frontend nil))
+     (set-frontend-full-screen-mode frontend nil))
     (t nil)))
 
+;; Route local input to the status bar, Editor, or Session.
 (defun set-session-frontend-input (frontend bytes)
   "Consume status bar input, then the Editor area. Return true to detach."
   (let* ((buffer
@@ -710,7 +726,7 @@
                                 (= (+ offset 2) length))))
                   (set-frontend-input-range offset)
                   (return))
-                 ((and (not (session-frontend-application-p frontend))
+                 ((and (not (session-frontend-full-screen-p frontend))
                        (session-frontend-expanded-p frontend)
                        (= (aref buffer offset) 27)
                        (or (= (1+ offset) length)
@@ -731,6 +747,7 @@
                     (get-internal-real-time)))))
       detach-p)))
 
+;; Resolve one delayed Escape according to frontend state.
 (defun set-pending-frontend-escape (frontend)
   "Resolve a standalone pending escape after a short input delay."
   (let ((since (session-frontend-pending-input-since frontend)))
@@ -741,7 +758,7 @@
       (setf (session-frontend-input-buffer frontend)
             (make-array 0 :element-type '(unsigned-byte 8))
             (session-frontend-pending-input-since frontend) nil)
-      (if (and (not (session-frontend-application-p frontend))
+      (if (and (not (session-frontend-full-screen-p frontend))
                (session-frontend-expanded-p frontend))
           (set-frontend-requested-session frontend (session-frontend-name frontend))
           (set-frontend-chunk
@@ -784,6 +801,7 @@
           (sleep 0.01)
           nil))))
 
+;; Forward manager output and consume transport controls.
 (defun set-socket-output (frontend)
   "Forward one available socket chunk and return its end state."
   (multiple-value-bind (bytes eof-p)
@@ -797,7 +815,7 @@
                (when (session-frontend-output-fd frontend)
                  (set-fd (session-frontend-output-fd frontend) ordinary)))
              (lambda (payload)
-               (set-application-mode-control frontend payload)))
+               (set-session-mode-control frontend payload)))
             (values nil nil))
       (declare (ignore result))
       (multiple-value-bind (ignored flushed-p)
@@ -809,6 +827,7 @@
         (declare (ignore ignored))
         (values eof-p (or activity-p flushed-p))))))
 
+;; Run the interactive status bar frontend loop.
 (defun set-status-bar-loop (frontend list-sessions enter-session)
   "Run FRONTEND until its Session source or input ends."
   (loop
@@ -877,6 +896,7 @@
        (del-bracketed-paste frontend)
        (del-status-bar-mouse frontend)))))
 
+;; Forward a non-TTY manager socket without a status bar.
 (defun set-socket-passthrough (frontend)
   "Forward a manager socket without a status bar."
   (set-raw-input
@@ -902,7 +922,7 @@
                     (when output-fd
                       (set-fd output-fd ordinary)))
                   (lambda (payload)
-                    (set-application-mode-control frontend payload))))
+                    (set-session-mode-control frontend payload))))
                 (when eof-p
                  (return))))
            (when (and input-fd (event-readable-p events input-fd))
@@ -918,9 +938,10 @@
               (when output-fd
                 (set-fd output-fd ordinary))))))))))
 
+;; Run a local frontend around a manager socket.
 (defun set-socket-frontend (socket-fd name list-sessions enter-session
                             &key (input-fd 0) (output-fd 1)
-                              (application-p nil))
+                              (full-screen-p nil))
   "Run a local frontend for a manager socket."
   (let ((frontend
           (new-session-frontend
@@ -928,7 +949,7 @@
            :socket-fd socket-fd
            :input-fd input-fd
            :output-fd output-fd
-           :application-p application-p)))
+           :full-screen-p full-screen-p)))
     (if (and input-fd
              output-fd
              (tty-p input-fd)
@@ -1006,6 +1027,7 @@
             (when result
               (return)))))))
 
+;; Enter NAME through an existing local frontend.
 (defun set-attachment-session (frontend name)
   "Replace FRONTEND's Attachment with NAME."
   (let ((old (session-frontend-attachment frontend)))
@@ -1016,22 +1038,22 @@
       (return-from set-attachment-session old))
     (let ((new (new-attachment name)))
       (del-frontend-editor frontend)
-      (set-current-attachment new)
+      (set-active-attachment new)
       (setf (session-frontend-attachment frontend) new
             (session-frontend-name frontend) name)
-      (set-frontend-application-mode
+      (set-frontend-full-screen-mode
        frontend
-       (session-application-p (attachment-session new)))
+       (session-full-screen-p (attachment-session new)))
       (ignore-errors (del-attachment old))
       (set-terminal-output
        (get-attachment-start-screen new)
        (session-frontend-output-fd frontend)))))
 
+;; Run a frontend for one managed Attachment.
 (defun set-passthrough-frontend (&key
                                   (attachment nil)
                                   (input-fd 0)
                                   (output-fd 1)
-                                  (application-p nil)
                                   (socket-control-p nil))
   "Run a managed passthrough frontend for ATTACHMENT."
   (unless attachment
@@ -1047,9 +1069,8 @@
             :attachment attachment
             :input-fd input-fd
             :output-fd output-fd
-            :application-p (or application-p
-                               (session-application-p
-                                (attachment-session attachment)))
+            :full-screen-p (session-full-screen-p
+                            (attachment-session attachment))
             :socket-control-p socket-control-p)))
     (unwind-protect
          (progn
@@ -1066,16 +1087,28 @@
                 (lambda ()
                   (set-attachment-loop frontend)))))
       (del-frontend-editor-render frontend)
-      ;; Close the current Attachment after a status bar Session change.
+      ;; Close the active Attachment after a status bar Session change.
       (ignore-errors
         (del-attachment (session-frontend-attachment frontend)))))
   nil)
 
-(defun set-current-session (name &key (application-p nil) (input-fd 0) (output-fd 1))
-  "Enter the named Session through the process-global current position."
-  (let ((attachment (new-attachment name :application-p application-p)))
-    (set-current-attachment attachment)
+;; Enter an existing Session through the Terminal frontend.
+(defun get-session (name &key (input-fd 0) (output-fd 1))
+  "Enter the named Session through the Terminal frontend."
+  (let ((attachment (new-attachment name)))
+    (set-active-attachment attachment)
     (set-passthrough-frontend :attachment attachment
                               :input-fd input-fd
                               :output-fd output-fd)
     name))
+
+;; Ensure NAME exists, then enter its Session.
+(defun new-session (name &key
+                           (shell (get-shell))
+                           (width 80)
+                           (height 24)
+                           (input-fd 0)
+                           (output-fd 1))
+  "Ensure NAME exists, then enter its Session."
+  (new-session-value name :shell shell :width width :height height)
+  (get-session name :input-fd input-fd :output-fd output-fd))

@@ -1,26 +1,30 @@
-# Run a session manager for named sessions
-
-This decision is superseded by ADR-0010 for manager lifecycle behavior.
-
-MTM uses a long-lived session manager to own shell sessions across command invocations.
-The command surface described here is superseded by ADR-0008.
-The manager lifetime, scope, socket, and restart decisions remain.
-The bare `mtm` command starts the manager when necessary, displays the session list, and exits without attaching.
-The `mtm <session-name>` command starts the manager when necessary, atomically finds or creates the named session, then attaches the command frontend.
-All commands use the same manager when it already exists.
-The manager scope is the current user on the current machine.
-The manager stays alive without sessions until an external stop signal.
-The bare command displays session names and execution states.
-This change adds no manager stop option.
-The manager uses a per-user Unix domain socket for local IPC.
-Commands wait for manager readiness before sending requests.
-Commands replace stale manager endpoints before restarting the manager.
-Frontend communication failure exits the frontend and preserves the session.
-Named lookup supports `ready`, `running`, and `error` execution states.
-This decision does not define new behavior for `closed` sessions.
-Manager restart loses sessions because session state remains in memory.
+# Run a user-scoped Session manager for named Sessions
 
 ## Status
 
-superseded by ADR-0010
-ADR-0011 removes its command frontend and execution states.
+accepted
+
+## Decision
+
+MTM uses one long-lived Session manager for one user and host.
+The manager owns named shell Sessions and their Attachments.
+It runs behind a per-user Unix socket.
+Commands connect to that socket across process invocations.
+
+`new session-manager` ensures that the manager runs.
+`new session <name>` ensures the manager and named Session.
+It then enters that Session through the Terminal frontend.
+`get session <name>` enters an existing named Session.
+`get session-manager` returns the manager state and Session list.
+`del session <name>` removes one named Session.
+`del session-manager` removes every Session and stops the manager.
+
+The manager starts automatically for `new session <name>`.
+Repeated `new` and `del` operations keep the same result.
+Commands wait for manager readiness before sending requests.
+The manager keeps running after ordinary client commands exit.
+The manager stops only through `del session-manager` or process failure.
+Restarting the manager loses in-memory Session state.
+
+The manager also hosts the local Browser frontend.
+The Browser frontend lists and enters named Sessions.

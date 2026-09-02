@@ -147,11 +147,13 @@
                      (platform-error-errno condition)
                      (platform-error-message condition)))))
 
-(defun get-current-errno ()
+;; Return the operating system error number.
+(defun get-errno ()
   (mem-ref (%errno-location) :int))
 
+;; Signal one operating system error with its saved errno.
 (defun set-platform-error (operation)
-  (let ((errno (get-current-errno)))
+  (let ((errno (get-errno)))
     (error 'platform-error
            :operation operation
            :errno errno
@@ -252,6 +254,7 @@
                      (%waitpid pid status 0)))
                  (error condition))))))))))
 
+;; Wait for descriptor events and return their readiness flags.
 (defun get-poll-events (descriptors &key (timeout -1))
   "Wait for DESCRIPTORS and return their nonzero revents."
   (check-type timeout integer)
@@ -275,9 +278,10 @@
                             when (plusp revents)
                               collect (cons fd revents))))
                    ((zerop result) (return nil))
-                   ((= (get-current-errno) +eintr+) nil)
+                   ((= (get-errno) +eintr+) nil)
                    (t (set-platform-error "poll")))))))
 
+;; Read bytes from FD and report end of file.
 (defun get-fd (fd &key (max-bytes 4096) (wait-p nil))
   "Read bytes from FD and return bytes plus an end-of-file flag."
   (check-type max-bytes (integer 1))
@@ -293,7 +297,7 @@
                   (return (values bytes nil))))
                ((zerop count) (return (values #() t)))
                (t
-                (let ((errno (get-current-errno)))
+                (let ((errno (get-errno)))
                   (cond
                     ((= errno +eintr+) nil)
                     ((= errno +eagain+)
@@ -303,6 +307,7 @@
                     ((= errno +eio+) (return (values #() t)))
                     (t (set-platform-error "read")))))))))
 
+;; Write all BYTES to FD.
 (defun set-fd (fd bytes)
   "Write all BYTES to FD and return the byte count."
   (check-type bytes vector)
@@ -321,7 +326,7 @@
                      ((plusp count) (incf offset count))
                      ((zerop count) (return offset))
                      (t
-                      (let ((errno (get-current-errno)))
+                      (let ((errno (get-errno)))
                         (cond
                           ((= errno +eintr+) nil)
                           ((= errno +eagain+)
@@ -329,6 +334,7 @@
                           (t (set-platform-error "write"))))))
                 finally (return offset))))))
 
+;; Read the process status, optionally without waiting.
 (defun get-process-status (pid &key (no-hang-p nil))
   "Wait for PID and return its status, or NIL while it runs."
   (with-foreign-object (status :int)
@@ -336,13 +342,14 @@
           do (cond
                ((= result pid) (return (mem-ref status :int)))
                ((zerop result) (return nil))
-               ((and (= result -1) (= (get-current-errno) +eintr+)) nil)
+               ((and (= result -1) (= (get-errno) +eintr+)) nil)
                (t (set-platform-error "waitpid"))))))
 
+;; Send a hangup signal to PID.
 (defun del-process (pid)
   "Send SIGHUP to PID."
   (when (and (minusp (%kill pid +sighup+))
-             (/= (get-current-errno) +esrch+))
+             (/= (get-errno) +esrch+))
     (set-platform-error "kill(SIGHUP)"))
   t)
 
@@ -358,13 +365,15 @@
       (set-platform-error "setsockopt(SO_NOSIGPIPE)")))
   t)
 
+;; Close the PTY master descriptor FD.
 (defun del-pty (fd)
   "Close the PTY master FD."
   (when (and (minusp (%close-fd fd))
-             (/= (get-current-errno) 9))
+             (/= (get-errno) 9))
     (set-platform-error "close"))
   t)
 
+;; Run FUNCTION with FD in raw mode and restore it.
 (defun set-raw-terminal (function &key (fd 0))
   "Run FUNCTION with FD in raw mode and always restore its settings."
   (if (not (tty-p fd))
@@ -383,4 +392,4 @@
           ;; Keep the original error when restoration itself fails.
           (when (= (%tcsetattr fd +tcsanow+ saved) -1)
             (warn "Terminal restoration failed with errno ~D."
-                  (get-current-errno)))))))
+                  (get-errno)))))))

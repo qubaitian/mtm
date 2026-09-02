@@ -165,56 +165,55 @@
                   (get-terminal-screen-events terminal))
            "The terminal reports the wrong screen events.")))
 
-(deftest managed-session-application-mode-follows-screen-events ()
+(deftest managed-session-full-screen-mode-follows-screen-events ()
   (new-session-manager)
   (unwind-protect
-       (let* ((session (new-session "application" :shell "/bin/sh"))
-              (owner (new-attachment "application" :application-p t))
-              (other (new-attachment "application")))
-         (check (session-application-p session)
-                "The Session does not enter Application passthrough.")
-         (check (attachment-application-owner-p owner)
-                "The first Application Attachment is not the owner.")
-         (check (not (attachment-application-owner-p other))
-                "A second Attachment takes the Application owner.")
+       (let* ((session (new-session-value "full-screen" :shell "/bin/sh"))
+              (owner (new-attachment "full-screen")))
+         (check (not (session-full-screen-p session))
+                "The Session starts in full-screen mode.")
          (mtm.session::set-session-pty-output
           session
           (get-utf8 (format nil "~C[?1049h" #\Escape)))
-         (check (mtm.session::managed-session-application-screen-seen-p session)
-                "The Session misses alternate-screen entry.")
+         (check (session-full-screen-p session)
+                "The Session misses automatic full-screen entry.")
+         (check (attachment-full-screen-owner-p owner)
+                "The first Attachment does not control full-screen size.")
          (mtm.session::set-session-pty-output
           session
           (get-utf8 (format nil "~C[?1049l" #\Escape)))
-         (check (not (session-application-p session))
-                "The Session stays in Application passthrough after return.")
-         (check (not (attachment-application-owner-p owner))
-                "The Session keeps its Application owner after return.")
-         (del-attachment owner)
-         (del-attachment other))
+         (check (not (session-full-screen-p session))
+                "The Session stays in full-screen mode after return.")
+         (check (not (attachment-full-screen-owner-p owner))
+                "The Session keeps its full-screen owner after return.")
+         (del-attachment owner))
     (del-session-manager)))
 
-(deftest application-status-bar-reserves-pty-rows ()
+(deftest full-screen-status-bar-reserves-pty-rows ()
   (new-session-manager)
   (unwind-protect
-       (let* ((session (new-session "sized-application" :shell "/bin/sh"))
+       (let* ((session (new-session-value "sized-full-screen" :shell "/bin/sh"))
               (owner
-                (new-attachment (session-name session) :application-p t))
+                (new-attachment (session-name session)))
               (frontend
                 (mtm.frontend::new-session-frontend
                  :attachment owner
-                 :application-p t
+                 :full-screen-p t
                  :rows 10
                  :columns 80)))
+         (mtm.session::set-session-pty-output
+          session
+          (get-utf8 (format nil "~C[?1049h" #\Escape)))
          (setf (mtm.frontend::session-frontend-expanded-p frontend) t
                (mtm.frontend::session-frontend-drawn-session-count frontend) 2)
-         (mtm.frontend::set-application-size frontend)
+         (mtm.frontend::set-full-screen-size frontend)
          (multiple-value-bind (rows columns)
              (mtm.platform:get-terminal-size
               (pty-master
                (mtm.session::managed-shell-session
                 session)))
            (check (and (= rows 7) (= columns 80))
-                  "The Application status bar does not reserve PTY rows.")))
+                  "The full-screen status bar does not reserve PTY rows.")))
     (del-session-manager)))
 
 (deftest terminal-reports-its-size ()
@@ -297,9 +296,9 @@
     (check (mtm.frontend::session-frontend-expanded-p frontend)
            "The frontend loses a split mouse report.")))
 
-(deftest frontend-strips-split-application-mode-control ()
+(deftest frontend-strips-split-full-screen-mode-control ()
   (let* ((frontend
-           (mtm.frontend::new-session-frontend :application-p t))
+           (mtm.frontend::new-session-frontend :full-screen-p t))
          (marker (get-utf8
                   (format nil "x~C]MTM;mode;editor~Cy"
                           #\Escape
@@ -313,20 +312,20 @@
                   (setf ordinary
                         (concatenate 'string ordinary (bytes-to-string chunk))))
                 (lambda (payload)
-                  (mtm.frontend::set-application-mode-control
+                  (mtm.frontend::set-session-mode-control
                    frontend payload)))))
       (consume (subseq marker 0 4))
       (consume (subseq marker 4)))
     (check (string= "xy" ordinary)
            "The frontend forwards bytes around a mode control incorrectly.")
-    (check (not (mtm.frontend::session-frontend-application-p frontend))
+    (check (not (mtm.frontend::session-frontend-full-screen-p frontend))
            "The frontend does not apply a mode control.")))
 
-(deftest frontend-parses-application-resize-control ()
+(deftest frontend-parses-full-screen-resize-control ()
   (multiple-value-bind (rows columns)
-      (mtm.frontend::get-application-resize-control "resize;21;80")
+      (mtm.frontend::get-resize-control "resize;21;80")
     (check (and (= rows 21) (= columns 80))
-           "The frontend parses the wrong application size.")))
+           "The frontend parses the wrong full-screen size.")))
 
 (deftest frontend-forwards-incomplete-control-after-delay ()
   (let* ((frontend (mtm.frontend::new-session-frontend))
@@ -699,13 +698,13 @@
 (defun session-value-or-nil (name)
   "Return the named Session, or NIL when it is missing."
   (handler-case
-      (get-session name)
+      (get-session-value name)
     (error () nil)))
 
 (deftest managed-session-forwards-raw-input-and-output ()
   (new-session-manager)
   (unwind-protect
-       (let* ((session (new-session "raw"
+       (let* ((session (new-session-value "raw"
                                     :shell "/bin/sh"
                                     :width 30
                                     :height 6))
@@ -733,7 +732,7 @@
 (deftest detached-session-restores-retained-display ()
   (new-session-manager)
   (unwind-protect
-       (let* ((session (new-session "screen"
+       (let* ((session (new-session-value "screen"
                                     :shell "/bin/sh"
                                     :width 20
                                     :height 4))
@@ -747,11 +746,9 @@
                    (screen-has-text-p (get-retained-screen session)
                                       "screen-marker")))
                 "The Session does not update its retained display.")
-         (set-current-attachment first)
-         (check (string= "screen" (get-current-session))
-                "The current Session returns the wrong name.")
-         (check (del-current-session)
-                "The current Attachment does not detach.")
+         (set-active-attachment first)
+         (check (del-attachment first)
+                "The active Attachment does not detach.")
          (check (session-running-p session)
                 "Detaching terminates the Session.")
          (let ((second (new-attachment "screen")))
@@ -769,7 +766,7 @@
 (deftest managed-session-broadcasts-output ()
   (new-session-manager)
   (unwind-protect
-       (let* ((session (new-session "broadcast" :shell "/bin/sh"))
+       (let* ((session (new-session-value "broadcast" :shell "/bin/sh"))
               (first (new-attachment (session-name session)))
               (second (new-attachment (session-name session))))
          (check (and first second)
@@ -786,7 +783,7 @@
 (deftest slow-attachment-disconnects-after-buffer-overflow ()
   (new-session-manager :max-buffer-bytes 16384)
   (unwind-protect
-       (let* ((session (new-session "overflow" :shell "/bin/sh"))
+       (let* ((session (new-session-value "overflow" :shell "/bin/sh"))
               (slow (new-attachment (session-name session)))
               (writer (new-attachment (session-name session)))
               (stop-drainer-p nil)
@@ -817,7 +814,7 @@
 (deftest natural-exit-removes-session ()
   (new-session-manager)
   (unwind-protect
-       (let* ((session (new-session "exit" :shell "/bin/sh"))
+       (let* ((session (new-session-value "exit" :shell "/bin/sh"))
               (attachment (new-attachment "exit")))
          (check (set-attachment-input attachment
                                       (get-utf8 (format nil "exit~%")))
@@ -833,7 +830,7 @@
 (deftest explicit-termination-stops-session ()
   (new-session-manager)
   (unwind-protect
-       (let* ((session (new-session "delete" :shell "/bin/sh"))
+       (let* ((session (new-session-value "delete" :shell "/bin/sh"))
               (attachment (new-attachment "delete")))
          (check (eq session (del-session "delete"))
                 "Explicit Session deletion fails.")
@@ -848,19 +845,19 @@
 (deftest session-manager-stops-all-sessions ()
   (new-session-manager)
   (unwind-protect
-       (let* ((manager (get-session-manager))
-              (session (new-session "managed" :shell "/bin/sh")))
+       (let* ((manager (get-session-manager-value))
+              (session (new-session-value "managed" :shell "/bin/sh")))
          (check manager
                 "The Session manager does not start.")
-         (check (eq manager (get-session-manager))
+         (check (eq manager (get-session-manager-value))
                 "The process does not share its Session manager.")
          (check (eq manager (del-session-manager))
                 "The Session manager does not stop.")
-         (check (null (get-session-manager))
+         (check (null (get-session-manager-value))
                 "The Session manager remains globally stored.")
          (check (not (session-running-p session))
                 "Stopping the manager leaves a Session running."))
-    (when (get-session-manager)
+    (when (get-session-manager-value)
       (del-session-manager))))
 
 (defun terminal-settings (fd)

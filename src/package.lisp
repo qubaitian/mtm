@@ -110,38 +110,36 @@
                 #:get-terminal-screen-events
                 #:set-terminal-size
                 #:set-terminal-input
-                #:terminal-alternate-screen-p
                 #:terminal-height
                 #:terminal-width)
   (:import-from #:mtm.utf8
                 #:get-utf8-chunk)
-  (:intern #:set-current-attachment)
+  (:intern #:get-shell
+           #:get-session-manager-value
+           #:get-session-value
+           #:new-session-value
+           #:session-full-screen-p
+           #:set-active-attachment)
   (:export
    #:attachment
    #:attachment-session
    #:attachment-attached-p
    #:del-attachment
-   #:del-current-session
    #:del-session
    #:del-session-manager
    #:get-attachment-output
    #:get-attachment-start-screen
-   #:get-current-session
    #:get-retained-screen
-   #:get-session
    #:get-session-list
    #:get-session-size
    #:get-session-manager
-   #:new-session
    #:new-attachment
    #:new-session-manager
-   #:session-application-p
    #:session-history-box
    #:session-name
    #:session-running-p
    #:set-attachment-input
-   #:set-attachment-terminal-size
-   #:attachment-application-owner-p))
+   #:set-attachment-terminal-size))
 
 (defpackage #:mtm.frontend
   (:use #:cl)
@@ -161,19 +159,21 @@
   (:import-from #:mtm.session
                 #:del-attachment
                 #:attachment-session
-                #:attachment-application-owner-p
                 #:get-attachment-output
                 #:get-attachment-start-screen
+                #:get-shell
                 #:get-retained-screen
+                #:get-session-value
                 #:get-session-list
                 #:get-session-size
                 #:new-attachment
-                #:session-application-p
+                #:new-session-value
+                #:session-full-screen-p
                 #:session-history-box
                 #:session-name
                 #:set-attachment-input
                 #:set-attachment-terminal-size
-                #:set-current-attachment)
+                #:set-active-attachment)
   (:import-from #:mtm.editor
                 #:del-editor-render
                 #:del-editor-selection
@@ -192,54 +192,47 @@
   (:import-from #:mtm.utf8
                 #:get-utf8)
   (:export
+   #:get-session
+   #:new-session
    #:set-socket-frontend
-   #:set-frontend-application-mode
    #:session-frontend-name
    #:session-frontend-socket-fd
-   #:set-current-session
    #:set-passthrough-frontend))
 
 (defpackage #:mtm
   (:use #:cl)
   (:import-from #:mtm.frontend
-                #:set-current-session
+                #:get-session
+                #:new-session
                 #:set-passthrough-frontend)
   (:import-from #:mtm.session
                 #:attachment
                 #:attachment-session
                 #:attachment-attached-p
                 #:del-attachment
-                #:del-current-session
                 #:del-session
                 #:del-session-manager
-                #:get-session
                 #:get-session-list
                 #:get-session-size
                 #:get-session-manager
-                #:get-current-session
                 #:get-attachment-output
                 #:get-attachment-start-screen
                 #:get-retained-screen
                 #:new-attachment
-                #:new-session
                 #:new-session-manager
-                #:session-application-p
                 #:session-name
                 #:session-running-p
                 #:set-attachment-input
-                #:set-attachment-terminal-size
-                #:attachment-application-owner-p)
+                #:set-attachment-terminal-size)
   (:export
    #:attachment
    #:attachment-session
    #:attachment-attached-p
    #:del-attachment
-   #:del-current-session
    #:del-session
    #:del-session-manager
    #:get-attachment-output
    #:get-attachment-start-screen
-   #:get-current-session
    #:get-retained-screen
    #:get-session
    #:get-session-list
@@ -248,11 +241,8 @@
    #:new-attachment
    #:new-session
    #:new-session-manager
-   #:session-application-p
    #:session-name
    #:session-running-p
    #:set-attachment-input
    #:set-attachment-terminal-size
-   #:attachment-application-owner-p
-   #:set-current-session
    #:set-passthrough-frontend))

@@ -1,27 +1,25 @@
 # Add a local Editor area
 
-MTM intercepts keys in the Terminal frontend before Submission.
-This restores a local Editor area after ADR-0011 removed it.
-The frontend is not a general terminal for vim or pagers.
-
 ## Status
 
 accepted
 
 ## Decision
 
-The Editor area is a layer on the Terminal frontend.
-It is not a second frontend.
-The Edit buffer belongs to one Attachment.
-History belongs to the Session and is shared by Attachments.
+MTM intercepts normal Terminal frontend input before Submission.
+The Editor area belongs to one Attachment.
+Session History belongs to the Session.
+History remains available across Attachments.
+
+The Editor area handles ordinary Shell input.
 Empty Ctrl-D detaches the Attachment.
-It does not send EOF to the shell.
-The overlay starts at column 0.
-The status bar handles mouse and Esc first.
+The overlay starts at column zero.
+The status bar handles mouse input and Escape first.
 The Viewport excludes status bar rows.
-History and the Editor area are not public data positions.
 
-## Conflicts
+Full-screen terminal applications use automatic full-screen transport.
+The terminal emulator detects alternate-screen entry.
+The frontend then sends keyboard bytes directly to the PTY.
+Alternate-screen exit restores the Editor area.
 
-This decision supersedes the “no editor” clause in ADR-0011.
-ADR-0013 still owns the status bar.
+Edit buffers and History are not public data positions.

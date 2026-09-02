@@ -1,18 +1,18 @@
-# Add a global debug mode
-
-MTM enables debug mode through the existing session manager.
-The manager writes complete diagnostic logs to a per-user file and broadcasts them to active sessions.
-SBCL reports conditions and backtraces without entering the debugger.
+# Keep evaluation and debug controls outside MTM
 
 ## Status
 
-superseded by ADR-0008
+accepted
 
-## Considered Options
+## Decision
 
-Restarting the manager does not work because it loses all in-memory sessions.
+MTM exposes no evaluator or debug data position.
+The CLI reports invalid operations as errors.
+The Lisp API exposes only Session and frontend functions.
+Diagnostic output stays on the process error stream.
 
 ## Consequences
 
-Debug mode remains active until the manager exits.
-Diagnostic records include submitted input and error backtraces.
+MTM has no debug command or debug mode option.
+The Session manager does not broadcast diagnostic records.
+Users inspect failures through the returned error text.

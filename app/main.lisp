@@ -7,22 +7,20 @@
   (format *error-output* "MTM error: ~A~%" condition)
   (finish-output *error-output*))
 
+;; Signal the valid CLI forms for one operation.
 (defun set-application-usage-error (operation)
-  "Signal the complete usage for an operation with two forms."
+  "Signal the complete usage for an operation."
   (error "Usage:~%  mtm ~A session-manager~%  mtm ~A session <name>"
          operation
          operation))
 
+;; Dispatch one command using the named Session operations.
 (defun set-application-operation (command)
   "Apply one NEW, GET, SET, or DEL CLI operation."
-  (let ((arguments (command-arguments command))
-        (application-p (getopt command :application)))
+  (let ((arguments (command-arguments command)))
     (unless arguments
       (error "The CLI requires NEW, GET, SET, or DEL."))
     (let ((operation (first arguments)))
-      (when (and application-p
-                 (not (string-equal operation "SET")))
-        (error "--application only supports SET CURRENT-SESSION."))
       (cond
         ((string-equal operation "NEW")
          (cond
@@ -35,25 +33,20 @@
            (t
             (set-application-usage-error "new"))))
         ((string-equal operation "GET")
-         (unless (= (length arguments) 2)
-           (error "Usage: mtm get <session-manager|session>"))
+         (unless (member (length arguments) '(2 3))
+           (set-application-usage-error "get"))
          (let ((path (second arguments)))
            (cond
-             ((string-equal path "SESSION-MANAGER")
+             ((and (= (length arguments) 2)
+                   (string-equal path "SESSION-MANAGER"))
               (get-cli-session-manager))
-             ((string-equal path "SESSION")
-              (get-cli-session-list))
-             ((string-equal path "CURRENT-SESSION")
-              (error "The CLI current-session position is local to one process."))
+             ((and (= (length arguments) 3)
+                   (string-equal path "SESSION"))
+              (get-cli-session-frontend (third arguments)))
              (t
-              (error "GET does not support position ~A." path)))))
+              (set-application-usage-error "get")))))
         ((string-equal operation "SET")
-         (unless (and (= (length arguments) 3)
-                      (string-equal (second arguments) "CURRENT-SESSION"))
-           (error "Usage: mtm set current-session <name> [--application]"))
-         (set-cli-current-session-frontend
-          (third arguments)
-          :application-p application-p))
+         (error "SET has no supported Session position."))
         ((string-equal operation "DEL")
          (cond
            ((and (= (length arguments) 2)
@@ -67,17 +60,12 @@
         (t
          (error "Unknown CLI operation ~A." operation))))))
 
+;; Build the root MTM command without mode options.
 (defun new-application-command ()
   "Return the root command for the MTM application."
   (make-command :name "mtm"
                 :description "Manage named shell Sessions."
-                :usage "<new|get|set|del> <path> [value] [--application]"
-                :options
-                (list (make-option
-                       :flag
-                       :long-name "application"
-                       :description "Enter Application passthrough."
-                       :key :application))
+                :usage "<new|get|set|del> <path> [value]"
                 :version *version*
                 :handler #'set-application-operation))
 

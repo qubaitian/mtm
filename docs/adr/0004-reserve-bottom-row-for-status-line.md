@@ -1,18 +1,17 @@
-# Reserve the bottom row for the status line
-
-Each terminal frontend reserves the bottom row for a fixed status line.
-The shell uses the remaining rows so output cannot overwrite that line.
+# Reserve terminal rows for the Session status bar
 
 ## Status
 
-superseded by ADR-0011
+accepted
 
-## Considered Options
+## Decision
 
-Overlay the status line on the shell display.
-This lets shell output overwrite the status line.
+Each interactive Terminal frontend reserves rows for its status bar.
+The status bar stays below the Session display.
+The Editor Viewport excludes those rows.
+Full-screen transport also reserves the same rows.
 
 ## Consequences
 
-The command and passthrough frontends show the same status line.
-The PTY receives one fewer row than the terminal display.
+The frontend adjusts full-screen PTY height when needed.
+Session output remains visible above the status bar.

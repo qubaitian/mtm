@@ -1,43 +1,30 @@
 # Use a process-global name-based Lisp API
 
-MTM exposes named Lisp functions for Session management.
-The functions use Session names as their public identity.
-The process keeps one shared Session manager and current Attachment.
-Session creation creates the manager when it does not exist.
-The manager getter returns the manager or no value.
-The manager deletion function stops and clears the manager.
-The current-session setter enters Passthrough mode.
-The current-session deletion function detaches the current Attachment without arguments.
-The generic `mtm.api` operation package is removed.
-
 ## Status
 
 accepted
 
-## Considered Options
+## Decision
 
-Passing a Manager to every function exposes ownership clearly.
-It conflicts with the required process-global public API.
+MTM exposes named Lisp functions for Session management.
+The functions use Session names as their public identity.
+The Session manager remains process-global.
 
-Adding a separate Session ID creates an unused identity.
-Session names already identify every Session.
+`new-session-manager` ensures the global manager.
+`get-session-manager` returns its state and Session snapshot.
+`new-session` ensures a named Session, then enters it.
+`get-session` enters an existing named Session.
+`del-session` removes a named Session.
+`del-session-manager` removes all Sessions and stops the manager.
 
-Keeping a generic `new`, `set`, `get`, and `del` dispatcher duplicates named functions.
-Named functions make the Lisp API direct and discoverable.
+Session entry requires a name.
+Session values have no public setter.
+The generic `mtm.api` package is not part of the interface.
 
 ## Consequences
 
-`new-session` accepts a positional Session name.
-Session management functions do not accept a Manager argument.
 The manager stores Sessions by name only.
-Session list values contain Session names and Manager states.
-Only creation lazily starts the process-global Manager.
-Workflow and output functions use the `set-*` prefix.
-Predicate functions end with `-p` as an exception.
-
-## Conflicts with earlier ADRs
-
-This decision supersedes the generic API surface in ADR-0008.
-It supersedes explicit Manager ownership in ADR-0010.
-It follows the complete project-defined function naming decision in ADR-0009.
-It keeps Passthrough and Session behavior from ADR-0011.
+Session list values contain names and running states.
+Repeated creation reuses the same Session value.
+Repeated deletion leaves the same stopped result.
+Internal callers use private value functions when needed.

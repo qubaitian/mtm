@@ -5,7 +5,8 @@
 
 (defvar *session-state-lock* (make-lock "mtm process state"))
 (defvar *session-manager* nil)
-(defvar *current-attachment* nil)
+;; Store the Attachment used by this Lisp process.
+(defvar *active-attachment* nil)
 
 (defclass session-manager ()
   ((named-sessions
@@ -22,6 +23,7 @@
     :accessor manager-closed-p))
   (:documentation "Own managed shell sessions and their attachments."))
 
+;; Store one named shell Session and its shared display state.
 (defclass managed-session ()
   ((name
     :initarg :name
@@ -56,15 +58,14 @@
    (terminated-p
     :initform nil
     :accessor managed-session-terminated-p)
-   (application-p
+   ;; Track automatic full-screen terminal transport.
+   (full-screen-p
     :initform nil
-    :accessor managed-session-application-p)
-   (application-owner
+    :accessor managed-session-full-screen-p)
+   ;; Track the Attachment that controls full-screen terminal size.
+   (full-screen-owner
     :initform nil
-    :accessor managed-session-application-owner)
-   (application-screen-seen-p
-    :initform nil
-    :accessor managed-session-application-screen-seen-p)
+    :accessor managed-session-full-screen-owner)
    (reader-thread
     :initform nil
     :accessor session-reader-thread)
@@ -98,28 +99,51 @@
     :initform t
     :accessor managed-attachment-attached-p)))
 
+;; Ensure the process-global Session manager exists.
 (defun new-session-manager (&key
                                (max-buffer-bytes +default-buffer-bytes+))
-  "Create and store the process-global Session manager."
+  "Ensure and return the process-global Session manager."
   (check-type max-buffer-bytes (integer 1))
   (with-lock-held (*session-state-lock*)
-    (when *session-manager*
-      (error "The Session manager is already running."))
-    (setf *session-manager*
-          (make-instance 'session-manager
-                         :max-buffer-bytes max-buffer-bytes))))
+    (or *session-manager*
+        (setf *session-manager*
+              (make-instance 'session-manager
+                             :max-buffer-bytes max-buffer-bytes)))))
 
-(defun get-session-manager ()
-  "Return the process-global Session manager, or NIL."
+;; Return the process-global Session manager object for internal callers.
+(defun get-session-manager-value ()
+  "Return the process-global Session manager object, or NIL."
   (with-lock-held (*session-state-lock*)
     *session-manager*))
+
+;; Return named Sessions while MANAGER's lock is held.
+(defun get-session-list-under-lock (manager)
+  "Return MANAGER's named Sessions and running states."
+  (unless (manager-closed-p manager)
+    (sort
+     (loop for session being the hash-values of (manager-named-sessions manager)
+           collect (cons (session-name session) :running))
+     #'string<
+     :key #'car)))
+
+;; Return the Session manager state and all named Sessions.
+(defun get-session-manager ()
+  "Return the Session manager state snapshot."
+  (with-lock-held (*session-state-lock*)
+    (let ((manager *session-manager*))
+      (list :state (if manager :running :stopped)
+            :sessions (if manager
+                          (with-lock-held ((manager-lock manager))
+                            (get-session-list-under-lock manager))
+                          nil)))))
 
 (defun session-running-under-lock-p (session)
   "Return true when SESSION accepts attachments and input."
   (and (managed-session-running-p session)
        (not (managed-session-terminated-p session))))
 
-(defun get-current-shell ()
+;; Return the shell selected by the environment.
+(defun get-shell ()
   "Return the shell selected by the environment."
   (or (uiop:getenv "SHELL") "/bin/sh"))
 
@@ -138,10 +162,11 @@
     (error "Session names use letters, digits, dots, dashes, and underscores."))
   name)
 
-(defun get-session (name)
-  "Return the managed Session named NAME."
+;; Return the managed Session value named NAME.
+(defun get-session-value (name)
+  "Return the managed Session value named NAME."
   (get-valid-session-name name)
-  (let ((manager (get-session-manager)))
+  (let ((manager (get-session-manager-value)))
     (or (when manager
           (with-lock-held ((manager-lock manager))
             (unless (manager-closed-p manager)
@@ -150,17 +175,13 @@
             (error "The Session named ~A does not exist." name)
             (error "The Session manager is stopped.")))))
 
+;; Return every named Session and its running state.
 (defun get-session-list ()
   "Return active named Sessions as NAME and STATE conses."
-  (let ((manager (get-session-manager)))
+  (let ((manager (get-session-manager-value)))
     (when manager
       (with-lock-held ((manager-lock manager))
-        (unless (manager-closed-p manager)
-          (sort
-           (loop for session being the hash-values of (manager-named-sessions manager)
-                 collect (cons (session-name session) :running))
-           #'string<
-           :key #'car))))))
+        (get-session-list-under-lock manager)))))
 
 (defun del-session-registry-entry (session)
   "Remove SESSION from its manager after termination."
@@ -175,61 +196,63 @@
     (with-lock-held ((session-write-lock session))
       (ignore-errors (del-shell-session (managed-shell-session session))))))
 
-(defun new-session (name &key
-                           (shell (get-current-shell))
-                           (width 80)
-                           (height 24))
-  "Start a fixed-size named shell and return its Session value."
+;; Ensure a fixed-size named shell and return its Session value.
+(defun new-session-value (name &key
+                                 (shell (get-shell))
+                                 (width 80)
+                                 (height 24))
+  "Ensure a fixed-size named shell and return its Session value."
   (get-valid-session-name name)
   (check-type width (integer 1))
   (check-type height (integer 1))
-  (let* ((manager
-           (with-lock-held (*session-state-lock*)
-             (or *session-manager*
-                 (setf *session-manager*
-                       (make-instance 'session-manager
-                                      :max-buffer-bytes
-                                      +default-buffer-bytes+)))))
-         (shell-session (new-shell-session :shell shell
-                                           :width width
-                                           :height height))
-         (managed-session nil)
-         (success-p nil))
-    (unwind-protect
-         (progn
-           (with-lock-held ((manager-lock manager))
-             (when (manager-closed-p manager)
-               (error "The Session manager is stopped."))
-             (when (gethash name (manager-named-sessions manager))
-               (error "A Session named ~A already exists." name))
-             (setf managed-session
-                   (make-instance 'managed-session
-                                  :name name
-                                  :manager manager
-                                  :shell-session shell-session
-                                  :terminal
-                                  (new-terminal-emulator
-                                   :width width
-                                   :height height))
-                   (gethash name (manager-named-sessions manager))
-                   managed-session)
-             (setf (session-reader-thread managed-session)
-                   (make-thread
-                    (lambda () (set-session-reader managed-session))
-                    :name name)))
-           (setf success-p t)
-           managed-session)
-      (unless success-p
-        (if managed-session
-            (del-managed-session managed-session)
-            (del-shell-session shell-session))))))
+  ;; Reuse the process-global manager for every named Session.
+  (let ((manager (new-session-manager))
+        (managed-session nil))
+    ;; Serialize lookup and creation under the manager lock.
+    (with-lock-held ((manager-lock manager))
+      (when (manager-closed-p manager)
+        (error "The Session manager is stopped."))
+      ;; Reuse the named Session when it already exists.
+      (let ((existing-session (gethash name (manager-named-sessions manager))))
+        (if existing-session
+            (setf managed-session existing-session)
+            (let ((shell-session (new-shell-session :shell shell
+                                                    :width width
+                                                    :height height))
+                  (success-p nil))
+              ;; Clean up the PTY if Session construction fails.
+              (unwind-protect
+                   (progn
+                     (setf managed-session
+                           (make-instance
+                            'managed-session
+                            :name name
+                            :manager manager
+                            :shell-session shell-session
+                            :terminal
+                            (new-terminal-emulator
+                             :width width
+                             :height height)))
+                     (setf (gethash name (manager-named-sessions manager))
+                           managed-session
+                           (session-reader-thread managed-session)
+                           (make-thread
+                            (lambda () (set-session-reader managed-session))
+                            :name name)
+                           success-p t))
+                (unless success-p
+                  (remhash name (manager-named-sessions manager))
+                  (del-shell-session shell-session)))))))
+    managed-session))
 
+;; Report whether SESSION accepts Attachments and input.
 (defun session-running-p (session)
   "Return true while SESSION accepts attachments and input."
   (check-type session managed-session)
   (with-lock-held ((session-lock session))
     (session-running-under-lock-p session)))
 
+;; Return SESSION's terminal width and height.
 (defun get-session-size (session)
   "Return SESSION's fixed terminal width and height."
   (check-type session managed-session)
@@ -237,8 +260,9 @@
     (values (terminal-width (managed-terminal session))
             (terminal-height (managed-terminal session)))))
 
+;; Return SESSION's latest retained display projection.
 (defun get-retained-screen (session)
-  "Return a copy of SESSION's current display projection."
+  "Return a copy of SESSION's latest display projection."
   (check-type session managed-session)
   (with-lock-held ((session-lock session))
     (get-terminal-copy (managed-terminal session))))
@@ -255,11 +279,12 @@
     (with-lock-held ((session-lock session))
       (managed-attachment-attached-p attachment))))
 
-(defun new-attachment (name &key application-p)
+;; Attach to the running Session named NAME.
+(defun new-attachment (name)
   "Attach to the running Session named NAME."
-  (let* ((manager (or (get-session-manager)
+  (let* ((manager (or (get-session-manager-value)
                       (error "The Session manager is stopped.")))
-         (session (get-session name)))
+         (session (get-session-value name)))
     (with-lock-held ((session-lock session))
       (unless (session-running-under-lock-p session)
         (error "The Session named ~A is stopped." name))
@@ -270,43 +295,54 @@
                               :start-screen start-screen
                               :max-buffer-bytes
                               (manager-max-buffer-bytes manager))))
-        (when application-p
-          (setf (managed-session-application-p session) t))
-        (when (and (managed-session-application-p session)
-                   (null (managed-session-application-owner session)))
-          (setf (managed-session-application-owner session) attachment
-                (managed-session-application-screen-seen-p session)
-                (terminal-alternate-screen-p (managed-terminal session))))
+        (when (and (managed-session-full-screen-p session)
+                   (null (managed-session-full-screen-owner session)))
+          (setf (managed-session-full-screen-owner session) attachment))
         (push attachment (session-attachments session))
         attachment))))
 
-(defun session-application-p (session)
-  "Return true while SESSION uses Application passthrough."
+;; Return true while SESSION displays a full-screen terminal application.
+(defun session-full-screen-p (session)
+  "Return true while SESSION displays a full-screen terminal application."
   (check-type session managed-session)
   (with-lock-held ((session-lock session))
-    (managed-session-application-p session)))
+    (managed-session-full-screen-p session)))
 
-(defun attachment-application-owner-p (attachment)
-  "Return true when ATTACHMENT controls Application passthrough size."
+;; Return true when ATTACHMENT controls full-screen terminal size.
+(defun attachment-full-screen-owner-p (attachment)
+  "Return true when ATTACHMENT controls full-screen terminal size."
   (check-type attachment attachment)
   (let ((session (attachment-session attachment)))
     (with-lock-held ((session-lock session))
-      (eq attachment (managed-session-application-owner session)))))
+      (eq attachment (managed-session-full-screen-owner session)))))
 
-(defun del-current-attachment (attachment)
-  "Clear ATTACHMENT from the process-global current position."
+;; Clear ATTACHMENT from the process-global active position.
+(defun del-active-attachment (attachment)
+  "Clear ATTACHMENT from the process-global active position."
   (with-lock-held (*session-state-lock*)
-    (when (eq attachment *current-attachment*)
-      (setf *current-attachment* nil))))
+    (when (eq attachment *active-attachment*)
+      (setf *active-attachment* nil))))
 
-(defun set-current-attachment (attachment)
-  "Store ATTACHMENT as the process-global current Attachment."
+;; Store ATTACHMENT as the process-global active Attachment.
+(defun set-active-attachment (attachment)
+  "Store ATTACHMENT as the process-global active Attachment."
   (check-type attachment attachment)
-  (del-current-session)
+  (del-active-session)
   (with-lock-held (*session-state-lock*)
-    (setf *current-attachment* attachment))
+    (setf *active-attachment* attachment))
   attachment)
 
+;; Detach the process's active Attachment.
+(defun del-active-session ()
+  "Detach the process-global active Attachment."
+  (let ((attachment
+          (with-lock-held (*session-state-lock*)
+            (prog1 *active-attachment*
+              (setf *active-attachment* nil)))))
+    (when attachment
+      (del-attachment attachment))))
+
+;; Detach ATTACHMENT while its Session lock is held.
 (defun del-attachment-under-lock (attachment)
   "Detach ATTACHMENT while its Session lock is held."
   (let ((attached-p (managed-attachment-attached-p attachment)))
@@ -318,38 +354,20 @@
                   (session-attachments (attachment-session attachment))
                   :test #'eq))
     (when (eq attachment
-              (managed-session-application-owner (attachment-session attachment)))
-      (setf (managed-session-application-owner (attachment-session attachment)) nil))
+              (managed-session-full-screen-owner (attachment-session attachment)))
+      (setf (managed-session-full-screen-owner (attachment-session attachment)) nil))
     (condition-notify (attachment-condition attachment))
     attached-p))
 
+;; Detach ATTACHMENT without closing its Session.
 (defun del-attachment (attachment)
   "Detach ATTACHMENT without closing its Session."
   (check-type attachment attachment)
   (let ((session (attachment-session attachment)))
     (with-lock-held ((session-lock session))
       (del-attachment-under-lock attachment)))
-  (del-current-attachment attachment)
+  (del-active-attachment attachment)
   t)
-
-(defun del-current-session ()
-  "Detach the process-global current Attachment without arguments."
-  (let ((attachment
-          (with-lock-held (*session-state-lock*)
-            (prog1 *current-attachment*
-              (setf *current-attachment* nil)))))
-    (when attachment
-      (del-attachment attachment))))
-
-(defun get-current-session ()
-  "Return the process-global current Session name."
-  (let ((attachment
-          (with-lock-held (*session-state-lock*)
-            *current-attachment*)))
-    (unless (and attachment (attachment-attached-p attachment))
-      (del-current-attachment attachment)
-      (error "The current-session position is missing."))
-    (session-name (attachment-session attachment))))
 
 (defun set-attachment-output (attachment bytes)
   "Queue BYTES, or disconnect ATTACHMENT after overflow."
@@ -380,6 +398,7 @@
           (push attachment detached))))
     detached))
 
+;; Update SESSION's projection and detect alternate-screen changes.
 (defun set-session-pty-output (session bytes)
   "Update SESSION's display projection and broadcast raw BYTES."
   (let ((detached nil))
@@ -390,21 +409,21 @@
           (setf (session-pending-bytes session) pending)
           (when (plusp (length text))
             (set-terminal-input (managed-terminal session) text))
-          (dolist (event (get-terminal-screen-events (managed-terminal session)))
+            (dolist (event (get-terminal-screen-events (managed-terminal session)))
             (case event
               (:enter
-               (when (managed-session-application-p session)
-                 (setf (managed-session-application-screen-seen-p session) t)))
+               (setf (managed-session-full-screen-p session) t
+                     (managed-session-full-screen-owner session)
+                     (or (managed-session-full-screen-owner session)
+                         (first (session-attachments session)))))
               (:leave
-               (when (and (managed-session-application-p session)
-                          (managed-session-application-screen-seen-p session))
-                 (setf (managed-session-application-p session) nil
-                       (managed-session-application-owner session) nil
-                       (managed-session-application-screen-seen-p session) nil)))))
+               (setf (managed-session-full-screen-p session) nil
+                     (managed-session-full-screen-owner session) nil))))
           (setf detached (set-session-output-under-lock session bytes)))))
     (dolist (attachment detached)
-      (del-current-attachment attachment))))
+      (del-active-attachment attachment))))
 
+;; Mark SESSION terminated and wake every Attachment.
 (defun set-session-terminated (session)
   "Close SESSION and wake every attached frontend."
   (let ((attachments nil))
@@ -418,7 +437,7 @@
           (setf (managed-attachment-attached-p attachment) nil)
           (condition-notify (attachment-condition attachment)))))
     (dolist (attachment attachments)
-      (del-current-attachment attachment))
+      (del-active-attachment attachment))
     (del-session-registry-entry session)
     t))
 
@@ -505,6 +524,7 @@
             t)
         (error () nil)))))
 
+;; Set the PTY size controlled by ATTACHMENT.
 (defun set-attachment-terminal-size (attachment rows columns)
   "Set the PTY size controlled by ATTACHMENT."
   (check-type attachment attachment)
@@ -515,7 +535,7 @@
       (with-lock-held ((session-lock session))
         (unless (and (session-running-under-lock-p session)
                      (managed-attachment-attached-p attachment)
-                     (eq attachment (managed-session-application-owner session)))
+                     (eq attachment (managed-session-full-screen-owner session)))
           (return-from set-attachment-terminal-size nil))
         (handler-case
             (with-lock-held ((session-write-lock session))
@@ -536,10 +556,18 @@
     (set-session-terminated session)
     t))
 
+;; Delete the named Session when it exists.
 (defun del-session (name)
-  "Terminate the Session named NAME and return its value."
-  (let ((session (get-session name)))
-    (del-managed-session session)
+  "Terminate the Session named NAME when it exists."
+  (get-valid-session-name name)
+  (let ((manager (get-session-manager-value))
+        (session nil))
+    (when manager
+      (with-lock-held ((manager-lock manager))
+        (unless (manager-closed-p manager)
+          (setf session (gethash name (manager-named-sessions manager)))))
+      (when session
+        (del-managed-session session)))
     session))
 
 (defun del-managed-session-manager (manager)
@@ -558,14 +586,14 @@
       (clrhash (manager-named-sessions manager)))
     t))
 
+;; Stop the manager and every named Session.
 (defun del-session-manager ()
   "Terminate every Session and clear the process-global Manager."
   (let ((manager nil))
     (with-lock-held (*session-state-lock*)
       (setf manager *session-manager*
             *session-manager* nil
-            *current-attachment* nil))
-    (unless manager
-      (error "The Session manager is stopped."))
-    (del-managed-session-manager manager)
+            *active-attachment* nil))
+    (when manager
+      (del-managed-session-manager manager))
     manager))

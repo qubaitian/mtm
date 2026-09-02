@@ -13,6 +13,7 @@
   (new-screen-cell (screen-cell-character cell)
                    (copy-list (screen-cell-style cell))))
 
+;; Store one retained terminal display and parser state.
 (defclass terminal-emulator ()
   ((width
     :initarg :width
@@ -32,9 +33,10 @@
    (primary-cursor-column
     :initform 0
     :accessor primary-cursor-column)
-   (primary-current-style
+   ;; Save styles from the primary display.
+   (primary-style
     :initform nil
-    :accessor primary-current-style)
+    :accessor primary-style)
    (primary-saved-row
     :initform 0
     :accessor primary-saved-row)
@@ -56,9 +58,10 @@
    (cursor-column
     :initform 0
     :accessor cursor-column)
-   (current-style
+   ;; Track styles for the active display.
+   (style
     :initform nil
-    :accessor current-style)
+    :accessor terminal-style)
    (saved-row
     :initform 0
     :accessor saved-row)
@@ -126,6 +129,7 @@
                  :height height
                  :cells (new-terminal-screen width height)))
 
+;; Copy the terminal's retained display state.
 (defun get-terminal-copy (terminal)
   "Return an independent copy of TERMINAL's retained screen state."
   (let ((copy (new-terminal-emulator
@@ -138,7 +142,7 @@
                (get-terminal-screen-copy (primary-cells terminal)))
           (primary-cursor-row copy) (primary-cursor-row terminal)
           (primary-cursor-column copy) (primary-cursor-column terminal)
-          (primary-current-style copy) (copy-list (primary-current-style terminal))
+          (primary-style copy) (copy-list (primary-style terminal))
           (primary-saved-row copy) (primary-saved-row terminal)
           (primary-saved-column copy) (primary-saved-column terminal)
           (primary-saved-style copy) (copy-list (primary-saved-style terminal))
@@ -146,7 +150,7 @@
           (terminal-alternate-screen-p terminal)
           (cursor-row copy) (cursor-row terminal)
           (cursor-column copy) (cursor-column terminal)
-          (current-style copy) (copy-list (current-style terminal))
+          (terminal-style copy) (copy-list (terminal-style terminal))
           (saved-row copy) (saved-row terminal)
           (saved-column copy) (saved-column terminal)
           (saved-style copy) (copy-list (saved-style terminal))
@@ -221,6 +225,7 @@
 (defun get-clamped-value (value minimum maximum)
   (max minimum (min value maximum)))
 
+;; Reset the terminal display and parser state.
 (defun set-terminal-reset (terminal)
   (let ((was-alternate-p (terminal-alternate-screen-p terminal)))
     (setf (terminal-cells terminal)
@@ -228,14 +233,14 @@
                                (terminal-height terminal))
           (cursor-row terminal) 0
           (cursor-column terminal) 0
-          (current-style terminal) nil
+          (terminal-style terminal) nil
           (saved-row terminal) 0
           (saved-column terminal) 0
           (saved-style terminal) nil
           (primary-cells terminal) nil
           (primary-cursor-row terminal) 0
           (primary-cursor-column terminal) 0
-          (primary-current-style terminal) nil
+          (primary-style terminal) nil
           (primary-saved-row terminal) 0
           (primary-saved-column terminal) 0
           (primary-saved-style terminal) nil
@@ -249,12 +254,13 @@
           (osc-escape-p terminal) nil))
   terminal)
 
+;; Enter the alternate terminal display.
 (defun set-terminal-alternate-screen (terminal)
   (unless (terminal-alternate-screen-p terminal)
     (setf (primary-cells terminal) (terminal-cells terminal)
           (primary-cursor-row terminal) (cursor-row terminal)
           (primary-cursor-column terminal) (cursor-column terminal)
-          (primary-current-style terminal) (copy-list (current-style terminal))
+          (primary-style terminal) (copy-list (terminal-style terminal))
           (primary-saved-row terminal) (saved-row terminal)
           (primary-saved-column terminal) (saved-column terminal)
           (primary-saved-style terminal) (copy-list (saved-style terminal))
@@ -263,7 +269,7 @@
                                (terminal-height terminal))
           (cursor-row terminal) 0
           (cursor-column terminal) 0
-          (current-style terminal) nil
+          (terminal-style terminal) nil
           (saved-row terminal) 0
           (saved-column terminal) 0
           (saved-style terminal) nil
@@ -272,12 +278,13 @@
           (cons :enter (terminal-screen-events terminal))))
   terminal)
 
+;; Restore the primary terminal display.
 (defun del-terminal-alternate-screen (terminal)
   (when (terminal-alternate-screen-p terminal)
     (setf (terminal-cells terminal) (primary-cells terminal)
           (cursor-row terminal) (primary-cursor-row terminal)
           (cursor-column terminal) (primary-cursor-column terminal)
-          (current-style terminal) (copy-list (primary-current-style terminal))
+          (terminal-style terminal) (copy-list (primary-style terminal))
           (saved-row terminal) (primary-saved-row terminal)
           (saved-column terminal) (primary-saved-column terminal)
           (saved-style terminal) (copy-list (primary-saved-style terminal))
@@ -300,6 +307,7 @@
       (set-terminal-scroll terminal)
       (incf (cursor-row terminal))))
 
+;; Write CHARACTER at the terminal cursor.
 (defun set-terminal-character (terminal character)
   (when (>= (cursor-column terminal) (terminal-width terminal))
     (setf (cursor-column terminal) 0)
@@ -307,7 +315,7 @@
   (let ((cell (aref (aref (terminal-cells terminal) (cursor-row terminal))
                     (cursor-column terminal))))
     (setf (screen-cell-character cell) character
-          (screen-cell-style cell) (copy-list (current-style terminal))))
+          (screen-cell-style cell) (copy-list (terminal-style terminal))))
   (incf (cursor-column terminal)))
 
 (defun set-terminal-cursor (terminal row column)
@@ -381,36 +389,38 @@
     ((or (<= 40 code 47) (<= 100 code 107)) :background)
     (t nil)))
 
+;; Apply one ANSI style CODE to the terminal state.
 (defun set-terminal-style-code (terminal code)
   (cond
-    ((= code 0) (setf (current-style terminal) nil))
+    ((= code 0) (setf (terminal-style terminal) nil))
     ((member code '(22 23 24))
-     (setf (current-style terminal)
+     (setf (terminal-style terminal)
            (remove-if (lambda (item)
                         (member item (case code
                                        (22 '(1 2))
                                        (23 '(3))
                                        (24 '(4)))))
-                      (current-style terminal))))
+                      (terminal-style terminal))))
     ((member code '(39 49))
-     (setf (current-style terminal)
+     (setf (terminal-style terminal)
            (remove-if (lambda (item)
                         (eq (get-style-kind item)
                             (if (= code 39) :foreground :background)))
-                      (current-style terminal))))
+                      (terminal-style terminal))))
     (t
      (let ((kind (get-style-kind code)))
        (when kind
-         (setf (current-style terminal)
+         (setf (terminal-style terminal)
                (remove-if (lambda (item)
                             (eq (get-style-kind item) kind))
-                          (current-style terminal))))
-     (pushnew code (current-style terminal) :test #'eql)))))
+                          (terminal-style terminal))))
+       (pushnew code (terminal-style terminal) :test #'eql)))))
 
 (defun set-terminal-sgr (terminal parameters)
   (dolist (code (or parameters '(0)))
     (set-terminal-style-code terminal (or code 0))))
 
+;; Apply one parsed ANSI CSI sequence.
 (defun set-terminal-csi (terminal final)
   (multiple-value-bind (parameters private)
       (get-csi-parameters (csi-buffer terminal))
@@ -461,12 +471,13 @@
          (#\m (set-terminal-sgr terminal parameters))
          (#\s (setf (saved-row terminal) (cursor-row terminal)
                      (saved-column terminal) (cursor-column terminal)
-                     (saved-style terminal) (copy-list (current-style terminal))))
+                     (saved-style terminal) (copy-list (terminal-style terminal))))
          (#\u (set-terminal-cursor terminal (saved-row terminal) (saved-column terminal))
-               (setf (current-style terminal) (copy-list (saved-style terminal))))
+               (setf (terminal-style terminal) (copy-list (saved-style terminal))))
          ;; CSI c queries device attributes. It does not reset the screen.
          (#\c nil))))))
 
+;; Apply one escaped terminal CHARACTER.
 (defun set-terminal-escape-character (terminal character)
   (case character
     (#\[ (setf (parser-state terminal) :csi
@@ -475,10 +486,10 @@
                 (osc-escape-p terminal) nil))
     (#\7 (setf (saved-row terminal) (cursor-row terminal)
                 (saved-column terminal) (cursor-column terminal)
-                (saved-style terminal) (copy-list (current-style terminal))
+                (saved-style terminal) (copy-list (terminal-style terminal))
                 (parser-state terminal) :ground))
     (#\8 (set-terminal-cursor terminal (saved-row terminal) (saved-column terminal))
-          (setf (current-style terminal) (copy-list (saved-style terminal))
+          (setf (terminal-style terminal) (copy-list (saved-style terminal))
                 (parser-state terminal) :ground))
     (#\c (set-terminal-reset terminal))
     (#\D (set-terminal-line-feed terminal)
@@ -550,8 +561,9 @@
 (defun set-terminal-style (stream style)
   (write-string (format nil "~C[~{~A~^;~}m" #\Escape style) stream))
 
+;; Render the retained terminal display as ANSI text.
 (defun get-terminal-render (terminal)
-  "Return the screen as ANSI text for the current terminal."
+  "Return the screen as ANSI text for the terminal."
   (with-output-to-string (stream)
     (write-string (format nil "~C[H~C[2J" #\Escape #\Escape) stream)
     (loop for row across (terminal-cells terminal)

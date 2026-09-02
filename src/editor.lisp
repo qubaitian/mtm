@@ -286,7 +286,7 @@
       (setf (get-editor-history-index editor) index)
       :changed)))
 
-;; Save the current edit buffer before entering history.
+;; Save the active edit buffer before entering history.
 (defun set-editor-history-up (editor)
   (let ((history (get-editor-history-entries editor)))
     (when history

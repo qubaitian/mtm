@@ -2,8 +2,6 @@
   (:use #:cl)
   (:import-from #:clingon
                 #:command-arguments
-                #:getopt
-                #:make-option
                 #:make-command
                 #:run)
   (:import-from #:mtm
@@ -12,12 +10,12 @@
                 #:del-session
                 #:del-session-manager
                 #:get-session
+                #:get-attachment-output
+                #:get-attachment-start-screen
                 #:get-session-list
                 #:get-session-manager
+                #:get-session-size
                 #:new-attachment
-                #:new-session
-                #:new-session-manager
-                #:session-application-p
                 #:session-name
                 #:set-passthrough-frontend)
   (:import-from #:mtm.pty
@@ -25,9 +23,15 @@
                 #:get-shell-output-bytes
                 #:new-shell-session
                 #:set-shell-input)
+  (:import-from #:mtm.session
+                #:get-session-manager-value
+                #:get-session-value
+                #:new-session-value
+                #:new-session-manager
+                #:session-full-screen-p)
   (:import-from #:mtm.frontend
                 #:set-socket-frontend
-                #:set-frontend-application-mode
+                #:set-frontend-full-screen-mode
                 #:session-frontend-name
                 #:session-frontend-socket-fd)
   (:import-from #:mtm.platform

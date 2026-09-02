@@ -11,12 +11,14 @@
     :initform t
     :accessor session-open-p)))
 
-(defun get-current-shell ()
+;; Return the shell selected by the environment.
+(defun get-shell ()
   "Return the shell selected by the environment."
   (or (uiop:getenv "SHELL") "/bin/sh"))
 
-(defun new-shell-session (&key (shell (get-current-shell)) (width 80) (height 24))
-  "Start the current shell inside a PTY."
+;; Start one selected shell inside a PTY.
+(defun new-shell-session (&key (shell (get-shell)) (width 80) (height 24))
+  "Start the selected shell inside a PTY."
   (multiple-value-bind (master process-id)
       (new-pty shell width height)
     (make-instance 'shell-session

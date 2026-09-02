@@ -1,19 +1,21 @@
-# Give the Session manager an explicit lifecycle
-
-MTM exposes the Session manager as a singleton data position.
-`new session-manager` starts it, `get session-manager` reports its state, and `del session-manager` stops it.
-Other operations require a running Session manager because explicit lifecycle control makes ownership clear.
+# Make Session manager lifecycle operations idempotent
 
 ## Status
 
-superseded by ADR-0012
+accepted
 
-## Considered Options
+## Decision
 
-Lazy manager startup keeps old commands convenient but hides service ownership.
-Idempotent `new` and `del` operations conflict with the four data operation rules.
+The Session manager is a process-global singleton value.
+`new session-manager` ensures that the manager exists.
+`get session-manager` reports its state and named Sessions.
+`del session-manager` stops it and removes every Session.
 
-## Consequences
+The manager starts automatically when `new session <name>` needs it.
+Repeated creation returns the existing manager.
+Repeated manager deletion reports the stopped state.
+Named Session deletion also has no effect after removal.
 
-Stopping the Session manager terminates every Session and disconnects clients.
-Restarting the Session manager loses all in-memory Sessions.
+The manager owns every Session and Attachment.
+Stopping the manager terminates every Session and disconnects clients.
+Restarting the manager starts with no named Sessions.

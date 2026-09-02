@@ -3,21 +3,15 @@
   (:import-from #:mtm
                 #:attachment-attached-p
                 #:del-attachment
-                #:del-current-session
                 #:del-session
                 #:del-session-manager
-                #:get-current-session
-                #:get-session
                 #:get-session-list
                 #:get-session-size
-                #:get-session-manager
                 #:new-attachment
-                #:new-session
                 #:new-session-manager
-                #:session-application-p
                 #:session-name
                 #:session-running-p
-                #:set-current-session)
+                #:get-session-manager)
   (:import-from #:mtm.pty
                 #:del-shell-session
                 #:get-shell-output-bytes
@@ -44,13 +38,16 @@
                 #:get-attachment-output
                 #:get-attachment-start-screen
                 #:get-retained-screen
+                #:get-session-manager-value
+                #:get-session-value
+                #:new-session-value
                 #:set-attachment-input
-                #:attachment-application-owner-p)
+                #:attachment-full-screen-owner-p
+                #:session-full-screen-p
+                #:set-active-attachment)
   (:import-from #:mtm.utf8
                 #:get-utf8)
   (:import-from #:mtm.platform
                 #:tty-p
                 #:set-raw-terminal)
-  (:import-from #:mtm.session
-                #:set-current-attachment)
   (:export #:set-tests))

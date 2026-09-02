@@ -97,15 +97,20 @@
         do (sleep +manager-connect-delay+)
         finally (error "The MTM Session manager did not start.")))
 
-(defun new-cli-session-manager ()
-  "Start the Session manager and print its state."
-  (when (manager-responding-p)
-    (error "The Session manager is already running."))
-  (new-manager-process)
-  (let ((socket (get-manager-startup-connection)))
-    (unwind-protect
-         (format t "running~%web ~A~%" (get-browser-url))
+;; Start the detached Session manager when no manager responds.
+(defun new-cli-session-manager-process ()
+  "Start the detached Session manager when it is absent."
+  (unless (manager-responding-p)
+    (new-manager-process)
+    ;; Close the readiness connection after startup succeeds.
+    (let ((socket (get-manager-startup-connection)))
       (del-manager-socket socket))))
+
+;; Ensure the detached Session manager and print its snapshot.
+(defun new-cli-session-manager ()
+  "Ensure the detached Session manager and print its snapshot."
+  (new-cli-session-manager-process)
+  (get-cli-session-manager))
 
 (defun get-manager-connection ()
   "Return a connection to the running manager."
@@ -125,57 +130,62 @@
   "Write one scalar value response to FD."
   (set-protocol-line fd (format nil "VALUE ~A ~A" path value)))
 
-(defun set-session-list-response (fd)
-  "Write the manager's named Session list to FD."
-  (dolist (entry (get-session-list))
+;; Send the manager snapshot through the protocol.
+(defun set-session-manager-response (fd)
+  "Write the Manager state and named Sessions to FD."
+  (let ((snapshot (get-session-manager)))
     (set-protocol-line
      fd
-     (format nil "SESSION ~A ~A"
-             (car entry)
-             (get-session-state-name (cdr entry)))))
+     (format nil "STATE ~A"
+             (get-session-state-name (getf snapshot :state))))
+    (dolist (entry (getf snapshot :sessions))
+      (set-protocol-line
+       fd
+       (format nil "SESSION ~A ~A"
+               (car entry)
+               (get-session-state-name (cdr entry))))))
   (set-protocol-line fd "END"))
 
+;; Ensure the named Session requested by one client.
 (defun new-session-request (fd parts)
-  "Create the named Session requested by PARTS."
+  "Ensure the named Session requested by PARTS."
   (unless (protocol-command-p parts "NEW" 3)
     (error "The manager received an invalid NEW request."))
   (unless (string= (second parts) "SESSION")
     (error "NEW supports only the SESSION position."))
-  (let ((session (new-session (third parts))))
+  (let ((session (new-session-value (third parts))))
     (set-value-response fd "SESSION" (session-name session))))
 
+;; Handle named Session and manager GET requests.
 (defun get-session-request (fd parts)
   "Return the value requested by a GET operation."
-  (unless (protocol-command-p parts "GET" 2)
-    (error "The manager received an invalid GET request."))
-  (let ((path (second parts)))
-    (if (string= path "SESSION")
-        (set-session-list-response fd)
-        (error "GET does not support position ~A." path))))
+  (cond
+    ((protocol-command-p parts "GET" 2)
+     (unless (string= (second parts) "SESSION-MANAGER")
+       (error "GET requires a Session manager name."))
+     (set-session-manager-response fd))
+    ((protocol-command-p parts "GET" 3)
+     (unless (string= (second parts) "SESSION")
+       (error "GET requires a Session name."))
+     (get-session-attachment-request fd (third parts)))
+    (t
+     (error "The manager received an invalid GET request."))))
 
-(defun set-current-session-request (fd parts)
-  "Enter the existing Session requested by PARTS."
-  (unless (and (member (length parts) '(3 4))
-               (string= (first parts) "SET"))
-    (error "The manager received an invalid SET request."))
-  (unless (string= (second parts) "CURRENT-SESSION")
-    (error "SET does not support position ~A." (second parts)))
-  (let ((application-p
-          (cond
-            ((= (length parts) 3) nil)
-            ((string= (fourth parts) "APPLICATION") t)
-            (t (error "SET CURRENT-SESSION accepts only APPLICATION."))))
-        (attachment nil))
-    (setf attachment
-          (new-attachment (third parts) :application-p application-p))
+;; Enter the named Session through the manager connection.
+(defun get-session-attachment-request (fd name)
+  "Enter the named Session through FD."
+  ;; Create the Attachment before transferring the socket.
+  (let* ((attachment (new-attachment name))
+         ;; Tell the client which input transport to use.
+         (full-screen-p
+           (session-full-screen-p (attachment-session attachment))))
     (handler-case
         (progn
           (set-protocol-line
            fd
            (format nil "READY ~A"
-                   (if (session-application-p
-                        (attachment-session attachment))
-                       "APPLICATION"
+                   (if full-screen-p
+                       "FULL-SCREEN"
                        "EDITOR")))
           ;; The frontend speaks directly through the socket descriptor.
           (set-passthrough-frontend
@@ -188,15 +198,18 @@
         (ignore-errors (del-attachment attachment))
         (error condition)))))
 
+;; Handle deletion of one named Session.
 (defun del-session-request (fd parts)
   "Delete the named Session requested by PARTS."
   (unless (protocol-command-p parts "DEL" 3)
     (error "The manager received an invalid DEL request."))
   (unless (string= (second parts) "SESSION")
     (error "DEL cannot remove position ~A." (second parts)))
-  (let ((session (del-session (third parts))))
-    (set-value-response fd "SESSION" (session-name session))))
+  (let ((name (third parts)))
+    (del-session name)
+    (set-value-response fd "SESSION" name)))
 
+;; Handle deletion of the manager and every named Session.
 (defun del-session-manager-request (fd parts stop-function)
   "Stop the manager requested by PARTS and close its listener."
   (unless (protocol-command-p parts "DEL" 2)
@@ -217,6 +230,7 @@
   (ignore-errors
     (set-protocol-line fd (format nil "ERROR ~A" condition))))
 
+;; Handle one request from a manager client.
 (defun set-manager-client (socket &optional stop-function)
   "Handle one manager protocol connection."
   (let ((fd (get-manager-socket-fd socket)))
@@ -228,22 +242,15 @@
                (cond
                  ((protocol-command-p parts "PING" 1)
                   (set-protocol-line fd "PONG"))
-                 ((and (protocol-command-p parts "NEW" 3)
-                       (string= (second parts) "SESSION"))
+                 ((protocol-command-p parts "NEW" 3)
                   (handler-case
                       (new-session-request fd parts)
                     (error (condition)
                       (set-manager-error-response fd line condition))))
-                 ((protocol-command-p parts "GET" 2)
+                 ((or (protocol-command-p parts "GET" 2)
+                      (protocol-command-p parts "GET" 3))
                   (handler-case
                       (get-session-request fd parts)
-                    (error (condition)
-                      (set-manager-error-response fd line condition))))
-                 ((and (member (length parts) '(3 4))
-                       (string= (first parts) "SET")
-                       (string= (second parts) "CURRENT-SESSION"))
-                  (handler-case
-                      (set-current-session-request fd parts)
                     (error (condition)
                       (set-manager-error-response fd line condition))))
                  ((and (protocol-command-p parts "DEL" 3)
@@ -322,6 +329,7 @@
                (unless stopping-p
                  (error condition))))))))
 
+;; Run the detached Session manager and Browser server.
 (defun set-manager-server ()
   "Run the background Session manager process."
   (let ((listener (new-manager-listener)))
@@ -334,7 +342,7 @@
                (set-manager-accept-loop listener))
           (del-manager-socket listener)
           (ignore-errors (delete-file (get-manager-socket-path)))
-          (when (get-session-manager)
+          (when (get-session-manager-value)
             (del-session-manager))
           (when browser-server
             (del-browser-server browser-server)))))))
@@ -355,71 +363,85 @@
            (error "The manager returned an invalid value."))
          (third parts))))))
 
+;; Ensure NAME exists and enter it through the local terminal.
 (defun new-cli-session (name)
-  "Create NAME through the manager and print its value."
+  "Ensure NAME exists, then enter it through the local terminal."
+  (new-cli-session-manager-process)
   (let* ((socket (get-manager-connection))
          (fd (get-manager-socket-fd socket)))
     (unwind-protect
          (progn
            (set-protocol-line fd (format nil "NEW SESSION ~A" name))
-           (format t "~A~%" (get-cli-value-response socket "SESSION")))
-      (del-manager-socket socket))))
+           (get-cli-value-response socket "SESSION"))
+      (del-manager-socket socket)))
+  (get-cli-session-frontend name))
 
+;; Read the Manager snapshot returned by SOCKET.
+(defun get-cli-session-manager-values (socket)
+  "Return the Manager state and Sessions from SOCKET."
+  ;; Collect the manager state and its named Session rows.
+  (let ((state nil)
+        (sessions nil))
+    (loop for line = (get-protocol-line (get-manager-socket-fd socket))
+          do (when (null line)
+               (error "The manager closed the state connection."))
+             (cond
+               ((uiop:string-prefix-p "STATE " line)
+                (setf state (subseq line (length "STATE "))))
+               ((string= line "END")
+                (return (values state (nreverse sessions))))
+               ((uiop:string-prefix-p "SESSION " line)
+                (let ((parts (uiop:split-string line)))
+                  (unless (= (length parts) 3)
+                    (error "The manager returned an invalid Session."))
+                  (push (cons (second parts) (third parts)) sessions)))
+               ((uiop:string-prefix-p "ERROR " line)
+                (error "~A" (subseq line (length "ERROR "))))
+               (t
+                (error "The manager returned an invalid state."))))))
+
+;; Print the manager snapshot for the CLI.
 (defun get-cli-session-manager ()
-  "Print the Session manager state."
-  (format t "~A~%"
-          (if (manager-responding-p)
-              "running"
-              "stopped")))
+  "Print the Manager state and all named Sessions."
+  (if (not (manager-responding-p))
+      (format t "state stopped~%")
+      (let ((socket (get-manager-connection)))
+        (unwind-protect
+             (progn
+               (set-protocol-line
+                (get-manager-socket-fd socket)
+                "GET SESSION-MANAGER")
+               (multiple-value-bind (state sessions)
+                   (get-cli-session-manager-values socket)
+                 (format t "state ~A~%" state)
+                 (dolist (session sessions)
+                   (format t "session ~A ~A~%"
+                           (car session)
+                           (cdr session)))))
+          (del-manager-socket socket)))))
 
+;; Read named Session rows for the status bar.
 (defun get-cli-session-list-values ()
-  "Return the manager's named Session list."
+  "Return the named Session list from the Manager."
   (let* ((socket (get-manager-connection))
-         (fd (get-manager-socket-fd socket))
-         (sessions nil))
+         (fd (get-manager-socket-fd socket)))
     (unwind-protect
          (progn
-           (set-protocol-line fd "GET SESSION")
-           (loop for line = (get-protocol-line fd)
-                 do (when (null line)
-                      (error "The manager closed the Session list connection."))
-                    (cond
-                      ((string= line "END")
-                       (return (nreverse sessions)))
-                      ((uiop:string-prefix-p "SESSION " line)
-                       (let ((parts (uiop:split-string line)))
-                         (unless (= (length parts) 3)
-                           (error "The manager returned an invalid Session."))
-                         (push (cons (second parts) (third parts))
-                               sessions)))
-                      ((uiop:string-prefix-p "ERROR " line)
-                       (error "~A" (subseq line (length "ERROR "))))
-                      (t
-                       (error "The manager returned an invalid Session list.")))))
+           (set-protocol-line fd "GET SESSION-MANAGER")
+           (multiple-value-bind (state sessions)
+               (get-cli-session-manager-values socket)
+             (declare (ignore state))
+             sessions))
       (del-manager-socket socket))))
 
-(defun get-cli-session-list ()
-  "Print the manager's named Session list."
-  (let ((sessions (get-cli-session-list-values)))
-    (if sessions
-        (dolist (session sessions)
-          (format t "~A~C~A~%"
-                  (car session)
-                  #\Tab
-                  (cdr session)))
-        (format t "No sessions.~%"))))
-
-(defun set-cli-current-session (name &key application-p)
+;; Open a named Session through the manager.
+(defun get-cli-session (name)
   "Enter NAME and return its manager connection."
   (let* ((socket (get-manager-connection))
          (fd (get-manager-socket-fd socket)))
     (handler-case
         (progn
-          (set-protocol-line
-           fd
-           (format nil "SET CURRENT-SESSION ~A~A"
-                   name
-                   (if application-p " APPLICATION" "")))
+          (set-protocol-line fd (format nil "GET SESSION ~A" name))
           (let* ((response (get-protocol-line fd))
                  (parts (and response (uiop:split-string response))))
             (cond
@@ -427,69 +449,75 @@
                     (= (length parts) 2)
                     (string= (first parts) "READY")
                     (member (second parts)
-                            '("APPLICATION" "EDITOR")
+                            '("FULL-SCREEN" "EDITOR")
                             :test #'string=))
                (values socket
-                       (string= (second parts) "APPLICATION")))
-              ((string= response "READY")
-               (values socket nil))
+                       (string= (second parts) "FULL-SCREEN")))
               ((and response (uiop:string-prefix-p "ERROR " response))
                (error "~A" (subseq response (length "ERROR "))))
               (t
-               (error "The manager rejected the current-session request.")))))
+               (error "The manager rejected the Session request.")))))
       (error (condition)
         (del-manager-socket socket)
         (error condition)))))
 
-(defun set-cli-current-session-frontend (name &key application-p)
+;; Run the local terminal frontend for NAME.
+(defun get-cli-session-frontend (name)
   "Enter NAME through the local terminal."
-  (multiple-value-bind (socket session-application-p)
-      (set-cli-current-session name :application-p application-p)
-    (set-client-frontend socket name
-                         :application-p session-application-p)))
+  (multiple-value-bind (socket full-screen-p)
+      (get-cli-session name)
+    (set-client-frontend socket name :full-screen-p full-screen-p)))
 
+;; Stop the manager and print the stopped state.
 (defun del-cli-session-manager ()
   "Stop the Session manager and print its state."
-  (let* ((socket (get-manager-connection))
-         (fd (get-manager-socket-fd socket)))
-    (unwind-protect
-         (progn
-           (set-protocol-line fd "DEL SESSION-MANAGER")
-           (format t "~A~%"
-                   (get-cli-value-response socket "SESSION-MANAGER")))
-      (del-manager-socket socket))))
+  (if (not (manager-responding-p))
+      (format t "state stopped~%")
+      (let* ((socket (get-manager-connection))
+             (fd (get-manager-socket-fd socket)))
+        (unwind-protect
+             (progn
+               (set-protocol-line fd "DEL SESSION-MANAGER")
+               (get-cli-value-response socket "SESSION-MANAGER")
+               (format t "state stopped~%"))
+          (del-manager-socket socket)))))
 
+;; Delete NAME through the manager.
 (defun del-cli-session (name)
   "Delete NAME through the manager and print its value."
-  (let* ((socket (get-manager-connection))
-         (fd (get-manager-socket-fd socket)))
-    (unwind-protect
-         (progn
-           (set-protocol-line fd (format nil "DEL SESSION ~A" name))
-           (format t "~A~%" (get-cli-value-response socket "SESSION")))
-      (del-manager-socket socket))))
+  (if (not (manager-responding-p))
+      (format t "~A~%" name)
+      ;; Keep the client connection private to this deletion.
+      (let* ((socket (get-manager-connection))
+             (fd (get-manager-socket-fd socket)))
+        (unwind-protect
+             (progn
+               (set-protocol-line fd (format nil "DEL SESSION ~A" name))
+               (format t "~A~%" (get-cli-value-response socket "SESSION")))
+          (del-manager-socket socket)))))
 
-(defun set-client-frontend (socket name &key application-p)
+;; Run the local frontend around manager SOCKET.
+(defun set-client-frontend (socket name &key (full-screen-p nil))
   "Run the local frontend around manager SOCKET."
-  (let ((current socket)
+  (let ((active-socket socket)
         (fd (get-manager-socket-fd socket)))
     (set-socket-sigpipe fd)
     (flet ((set-cli-session (frontend new-name)
              (unless (string= new-name (session-frontend-name frontend))
-               (multiple-value-bind (new-socket new-application-p)
-                   (set-cli-current-session new-name)
+               (multiple-value-bind (new-socket new-full-screen-p)
+                   (get-cli-session new-name)
                  (let ((new-fd (get-manager-socket-fd new-socket)))
                    (set-socket-sigpipe new-fd)
-                   (del-manager-socket current)
-                   (setf current new-socket
+                   (del-manager-socket active-socket)
+                   (setf active-socket new-socket
                          (session-frontend-socket-fd frontend) new-fd
                          (session-frontend-name frontend) new-name)
-                   (set-frontend-application-mode frontend new-application-p))))))
+                   (set-frontend-full-screen-mode frontend new-full-screen-p))))))
       (unwind-protect
            (set-socket-frontend
             fd
             name
             #'get-cli-session-list-values
             #'set-cli-session
-            :application-p application-p)
-        (del-manager-socket current)))))
+            :full-screen-p full-screen-p)
+        (del-manager-socket active-socket)))))

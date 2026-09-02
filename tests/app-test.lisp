@@ -74,10 +74,14 @@
 
 (deftest application-usage-lists-session-manager-forms ()
   (let ((new-usage (get-application-usage-error "new"))
+        (get-usage (get-application-usage-error "get"))
         (del-usage (get-application-usage-error "del")))
     (check (and (search "mtm new session-manager" new-usage)
                 (search "mtm new session <name>" new-usage))
            "The NEW usage omits a valid form.")
+    (check (and (search "mtm get session-manager" get-usage)
+                (search "mtm get session <name>" get-usage))
+           "The GET usage omits a valid form.")
     (check (and (search "mtm del session-manager" del-usage)
                 (search "mtm del session <name>" del-usage))
            "The DEL usage omits a valid form.")))
@@ -92,20 +96,18 @@
            "The application command has no handler.")
     (check (null (clingon:command-sub-commands command))
            "The application command exposes subcommands.")
-    (check (string= "<new|get|set|del> <path> [value] [--application]"
+    (check (string= "<new|get|set|del> <path> [value]"
                     (clingon:command-usage command))
            "The application command has the wrong operation usage.")))
 
-(deftest application-command-parses-application-flag ()
-  (let ((command (mtm.app::new-application-command)))
-    (clingon:parse-command-line
-     command
-     '("set" "current-session" "s1" "--application"))
-    (check (clingon:getopt command :application)
-           "The application command loses the Application flag.")
-    (check (equal '("set" "current-session" "s1")
-                  (clingon:command-arguments command))
-           "The application flag remains a positional argument.")))
+(deftest application-command-rejects-unsupported-option ()
+  (check (error-signals-p
+          (lambda ()
+            (let ((command (mtm.app::new-application-command)))
+              (clingon:parse-command-line
+               command
+               '("set" "session" "s1" "--unsupported")))))
+         "The CLI accepts an unsupported option."))
 
 (deftest application-rejects-removed-debug-operation ()
   (let ((command (clingon:make-command

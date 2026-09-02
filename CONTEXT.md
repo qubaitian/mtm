@@ -9,7 +9,7 @@ It does not define implementation details.
 A running interactive shell with a controlling PTY.
 _Avoid_: command, terminal process
 
-**Current shell**:
+**Selected shell**:
 The shell selected by the user's `$SHELL` setting.
 _Avoid_: zsh
 
@@ -56,7 +56,7 @@ _Avoid_: detachment
 **Terminal frontend**:
 A component that connects one Attachment to a terminal.
 It can use an Editor area for local input.
-It uses Passthrough mode for live PTY transport.
+It uses full-screen transport for live PTY input.
 _Avoid_: shell session, command frontend
 
 **Browser frontend**:
@@ -88,13 +88,8 @@ A new Attachment to an existing running Session.
 It receives the retained display before new output.
 _Avoid_: session restart
 
-**Current session**:
-The Session selected by one Lisp process.
-`set` enters it through the Terminal frontend.
-_Avoid_: attached session
-
 **Retained display**:
-The current screen projection kept while a Session runs detached.
+The latest screen projection kept while a Session runs detached.
 Reattachment starts with this projection.
 It is not retained after Session termination.
 _Avoid_: cleared screen
@@ -115,8 +110,9 @@ A rectangular display made of character cells and styles.
 _Avoid_: terminal buffer
 
 **Terminal size**:
-The fixed PTY width and height measured in character cells.
-The size is set when the Session starts.
+The PTY width and height measured in character cells.
+Normal Sessions use their configured dimensions.
+Full-screen transport may reduce height for the status bar.
 _Avoid_: pixel size
 
 ## Transport
@@ -156,29 +152,20 @@ _Avoid_: empty object
 
 **Missing position**:
 A value position with no value.
-Only `new` may create a missing position.
+`new` creates the missing value.
 _Avoid_: empty value
 
 **Existing position**:
 A value position with a non-`nil` value.
-Only `set`, `get`, and `del` may use it.
+`new` reuses it, while `get` reads it.
+`del` removes it.
 _Avoid_: occupied value
 
-**Control position**:
-A reserved position that controls frontend behavior.
-`current-session` accepts `set` for entering a Session.
-_Avoid_: data position
-
-**Current-session position**:
-A process-global control position for one Lisp process.
-`set` accepts a Session name and enters it through the Terminal frontend.
-`get` returns its current Session name.
-_Avoid_: manager current session
-
 **Session manager position**:
-A singleton value position for the current Session manager.
-`new` creates it, `get` returns it, and `del` stops it.
-Session creation creates it when no manager exists.
+A singleton value position for the Session manager.
+`new` ensures it, while `get` returns its state and Session list.
+`del` stops it and removes every Session.
+Creating a Session ensures the manager when needed.
 _Avoid_: service position
 
 **Session manager status bar**:
@@ -222,7 +209,7 @@ _Avoid_: blank content
 
 **Buffer end**:
 The absolute end of the Edit buffer.
-It is not the current line end.
+It is not the line end.
 _Avoid_: line end, last line
 
 **Multiline editing**:
@@ -262,15 +249,13 @@ _Avoid_: internal clipboard, application clipboard
 A program that controls the terminal screen and reads individual key events.
 _Avoid_: Vim mode, terminal editor
 
-**Application passthrough**:
-A Session mode that sends raw terminal octets directly to a full-screen terminal application.
+**Full-screen transport**:
+Automatic Session transport for an alternate-screen terminal application.
+It sends keyboard bytes directly to the PTY.
+It returns to the Editor area after alternate-screen exit.
 _Avoid_: raw mode, Vim mode
 
-**Application owner**:
-The Attachment that enters Application passthrough and controls the Session's PTY size.
-_Avoid_: active terminal, current frontend
-
-**Application return**:
-The transition that returns every Attachment to the Editor area after an application leaves its alternate screen.
+**Alternate-screen exit**:
+The event that returns every Attachment to the Editor area.
 The Session continues running.
 _Avoid_: mode reset, application detachment

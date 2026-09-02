@@ -1,27 +1,35 @@
 # Use four MTM data operations
 
-MTM exposes `new`, `set`, `get`, and `del` through `mtm.api`.
-`new` creates only a missing position, while `set`, `get`, and `del` require an existing position.
-`nil` means missing, so a position cannot contain `nil`.
-Session positions retain live managed Session objects rather than replacing them with lists.
-The CLI mirrors the interface with Session lifecycle and Passthrough operations.
-`current-session` is a control position that `set` initializes or switches.
-
-ADR-0011 removes the debug position and narrows supported positions.
-
 ## Status
 
-superseded in part by ADR-0011 and ADR-0012
+accepted
 
-## Considered Options
+## Decision
 
-MTM does not shadow `CL:SET` or `CL:GET`.
-Those functions have different signatures and storage semantics.
-The property-list implementation may still use `(setf (cl:get ...))`, `cl:get`, and `remprop` internally.
+MTM uses `new`, `set`, `get`, and `del` operation prefixes.
+Each operation addresses a named value position.
 
-## Consequences
+`new` ensures a value exists.
+It creates a missing value and reuses an existing value.
+`get` reads a value or enters a named Session.
+`set` changes state, applies input, or sends output.
+`del` removes, stops, closes, or cleans up a value.
 
-The named-function interface in ADR-0012 replaces this generic API.
-The new interface replaces the named-session and `debug` command forms described by ADR-0006 and ADR-0007.
-ADR-0011 removes closed-session retention after natural shell termination.
-`del` terminates a live Session and removes its registry position immediately.
+The Session manager position stores one manager value.
+`new session-manager` ensures that value exists.
+`get session-manager` returns its state and all named Sessions.
+`del session-manager` stops the manager and removes every Session.
+
+The Session position uses a required Session name.
+`new session <name>` ensures that Session, then enters it.
+`get session <name>` enters an existing Session.
+`del session <name>` removes that named Session.
+Bare `get session` and `del session` forms are invalid.
+The Session position has no `set` form.
+
+Every Session operation is safe to repeat.
+A repeated `new` does not create a duplicate Session.
+Repeated deletion does not restore a removed value.
+
+The CLI and Lisp interface share these meanings.
+Lisp names use the corresponding operation prefixes.

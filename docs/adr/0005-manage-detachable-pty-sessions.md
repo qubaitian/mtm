@@ -1,26 +1,24 @@
-# Manage detachable PTY sessions in process
-
-Earlier scope excludes detachment from the MVP.
-This decision supersedes that scope exclusion.
-The low-level shell session still stays separate from display behavior.
-Managed sessions own shared display state for attached frontends.
-An in-process session manager owns each PTY and its background reader.
-It stores opaque IDs and retains display projections while Sessions run.
-Detachment removes one attachment without terminating the shell session.
-Reattachment accepts only running sessions and restores their retained screen.
-
-ADR-0011 removes final-screen retention after Session termination.
+# Manage detachable PTY Sessions in the manager
 
 ## Status
 
-superseded by ADR-0006
-ADR-0011 narrows its retention and input behavior.
+accepted
+
+## Decision
+
+The Session manager owns each Session's PTY and reader.
+It stores Sessions by name.
+Each Session retains a terminal display projection.
+Each Session supports multiple Attachments.
+
+Detachment removes one Attachment without terminating its Session.
+Reattachment requires a named running Session.
+Reattachment shows the retained display before new PTY output.
+Natural shell exit removes the Session.
+Named deletion terminates its shell and Attachments.
 
 ## Consequences
 
-PTY output broadcasts to every attached frontend.
-Each attachment owns a bounded output buffer.
-Buffer overflow disconnects only the slow attachment.
-Input drafts stay private to their attachments.
-The session size stays fixed after creation.
-Service restart loses all in-memory sessions.
+Slow Attachments disconnect after exceeding their output limits.
+Other Attachments continue receiving shared output.
+The Session manager keeps shell state across client commands.
