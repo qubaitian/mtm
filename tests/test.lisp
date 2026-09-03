@@ -709,6 +709,21 @@
       (check (= (mtm.editor::get-editor-render-cursor-column render) 0)
              "Wrap-boundary cursor must start at column zero."))))
 
+;; Check that a Chinese character uses two terminal cells.
+(deftest editor-area-renders-chinese-cursor-at-two-cells ()
+  (let ((editor (mtm.editor:new-editor)))
+    (mtm.editor::set-editor-buffer-octets
+     editor
+     (get-utf8 (string (code-char 20013))))
+    (mtm.editor:set-editor-key editor :home)
+    (mtm.editor:set-editor-key editor :right)
+    ;; Render the moved cursor without terminal output.
+    (let ((render (mtm.editor:set-editor-render editor nil 80 24 0)))
+      (check (= (mtm.editor::get-editor-cursor editor) 3)
+             "Chinese movement must keep the UTF-8 byte boundary.")
+      (check (= (mtm.editor::get-editor-render-cursor-column render) 2)
+             "Chinese text must move the display cursor two cells."))))
+
 (deftest editor-area-completes-and-navigates-candidates ()
   (let ((editor
           (mtm.editor:new-editor

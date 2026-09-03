@@ -19,15 +19,47 @@
     (setf (aref result (length octets)) octet)
     result))
 
-;; Account for tabs and caret notation.
-(defun get-editor-cell-width (octets position column)
+;; Return true for Unicode characters rendered across two terminal cells.
+;; ponytail: use a fixed wide-character table; add full Unicode width data later.
+(defun get-editor-wide-character-p (code)
+  (or (<= #x1100 code #x115f)
+      (= code #x2329)
+      (= code #x232a)
+      (<= #x2e80 code #x303e)
+      (<= #x3040 code #xa4cf)
+      (<= #xac00 code #xd7a3)
+      (<= #xf900 code #xfaff)
+      (<= #xfe10 code #xfe19)
+      (<= #xfe30 code #xfe6f)
+      (<= #xff00 code #xff60)
+      (<= #xffe0 code #xffe6)
+      (<= #x20000 code #x2fffd)
+      (<= #x30000 code #x3fffd)))
+
+;; Account for tabs, caret notation, and double-width Unicode.
+(defun get-editor-cell-width (octets position column &optional character-length)
   (cond
     ((= (aref octets position) 9)
      (- 8 (mod column 8)))
     ((< (aref octets position) 32) 2)
     ((= (aref octets position) 127) 2)
-    ;; ponytail: one-cell Unicode width; add a width table if needed.
-    (t 1)))
+    (t
+     (let* (;; Read the current character's byte length.
+            (length (or character-length
+                        (get-utf8-character-length octets position)))
+            ;; Decode the current character for the width lookup.
+            (character
+              (when length
+                (nth-value
+                 0
+                 (get-utf8-chunk
+                  (subseq octets position (+ position length)))))))
+       (if (and character
+                (plusp (length character))
+                (get-editor-wide-character-p
+                 (char-code (char character 0))))
+           2
+           1)))))
 
 ;; Store Editor completion state beside the Edit buffer.
 ;; Keep bytes so submissions preserve spaces and UTF-8 text.
@@ -253,7 +285,8 @@ The provider receives a prefix string and returns complete strings."
         for length = (and (< position end)
                           (get-utf8-character-length buffer position end))
         while length
-        do (incf column (get-editor-cell-width buffer position column))
+        do (incf column
+                 (get-editor-cell-width buffer position column length))
         finally (return column)))
 
 ;; Choose a byte boundary nearest the requested display column.
@@ -263,7 +296,7 @@ The provider receives a prefix string and returns complete strings."
         for length = (and (< position end)
                           (get-utf8-character-length buffer position end))
         while length
-        for width = (get-editor-cell-width buffer position column)
+        for width = (get-editor-cell-width buffer position column length)
         do (when (>= column target)
              (return position))
            (incf column width)
@@ -811,8 +844,11 @@ FLUSH-P resolves one pending standalone Escape key."
                            column 0
                            start-column 0)
                      (incf index))
-                   (let* ((length (get-utf8-character-length buffer index))
-                          (cell-width (get-editor-cell-width buffer index column)))
+                   (let* (;; Read the current character's byte length.
+                          (length (get-utf8-character-length buffer index))
+                          ;; Measure the current character in terminal cells.
+                          (cell-width
+                            (get-editor-cell-width buffer index column length)))
                      (when (> (+ column cell-width) width)
                        (push (new-editor-screen-line
                               :start start
@@ -931,8 +967,11 @@ FLUSH-P resolves one pending standalone Escape key."
                 (setf column 0)
                 (incf index))
                (t
-                (let* ((length (get-utf8-character-length buffer index))
-                       (cell-width (get-editor-cell-width buffer index column))
+                (let* (;; Read the current character's byte length.
+                       (length (get-utf8-character-length buffer index))
+                       ;; Measure the current character in terminal cells.
+                       (cell-width
+                         (get-editor-cell-width buffer index column length))
                        (selected-p
                          (and selection-start
                               (<= selection-start (+ buffer-start index))
