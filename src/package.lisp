@@ -27,7 +27,9 @@
   (:use #:cl)
   (:export
    #:get-utf8-chunk
-   #:get-utf8))
+   #:get-utf8
+   #:get-utf8-character-length
+   #:get-utf8-previous-character-start))
 
 (defpackage #:mtm.editor
   (:use #:cl)
@@ -35,7 +37,9 @@
                 #:set-fd)
   (:import-from #:mtm.utf8
                 #:get-utf8
-                #:get-utf8-chunk)
+                #:get-utf8-chunk
+                #:get-utf8-character-length
+                #:get-utf8-previous-character-start)
   (:export
    #:del-editor-selection
    #:del-editor-completion

@@ -53,7 +53,8 @@
                 #:session-full-screen-p
                 #:set-active-attachment)
   (:import-from #:mtm.utf8
-                #:get-utf8)
+                #:get-utf8
+                #:get-utf8-chunk)
   (:import-from #:mtm.platform
                 #:tty-p
                 #:set-raw-terminal)

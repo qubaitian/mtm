@@ -328,6 +328,64 @@
               :element-type '(unsigned-byte 8)
               :initial-contents values))
 
+(deftest utf8-encodes-unicode-text ()
+  (check (equalp (get-utf8 "中𐀀")
+                 (new-test-octets #xe4 #xb8 #xad #xf0 #x90 #x80 #x80))
+         "Babel must encode Unicode text as UTF-8."))
+
+(deftest utf8-preserves-split-character ()
+  (multiple-value-bind (text pending)
+      (get-utf8-chunk (new-test-octets #xe4))
+    (check (string= text "")
+           "UTF-8 decoding must buffer incomplete characters.")
+    (check (equalp pending (new-test-octets #xe4))
+           "UTF-8 decoding must return incomplete trailing bytes.")
+    (multiple-value-bind (text remaining)
+        (get-utf8-chunk (new-test-octets #xb8 #xad) pending)
+      (check (string= text "中")
+             "UTF-8 decoding must join split character bytes.")
+      (check (null remaining)
+             "UTF-8 decoding must clear completed trailing bytes."))))
+
+(deftest utf8-replaces-malformed-character ()
+  (multiple-value-bind (text pending)
+      (get-utf8-chunk (new-test-octets #xe4 65))
+    (check (string= text (concatenate 'string (string (code-char #xfffd)) "A"))
+           "UTF-8 decoding must replace malformed character bytes.")
+    (check (null pending)
+           "Malformed UTF-8 must not remain pending.")))
+
+(deftest utf8-flushes-incomplete-character ()
+  (multiple-value-bind (text pending)
+      (get-utf8-chunk (new-test-octets #xe4))
+    (declare (ignore text))
+    (multiple-value-bind (flushed remaining)
+        (get-utf8-chunk pending nil t)
+      (check (string= flushed (string (code-char #xfffd)))
+             "UTF-8 termination must replace incomplete characters.")
+      (check (null remaining)
+             "UTF-8 termination must clear pending bytes."))))
+
+(deftest managed-session-flushes-pending-utf8 ()
+  (let* ((manager (new-session-manager))
+         (terminal (new-terminal-emulator :width 8 :height 2))
+         (session
+           (make-instance
+            'mtm.session::managed-session
+            :name "utf8-flush"
+            :manager manager
+            :shell-session nil
+            :terminal terminal)))
+    (unwind-protect
+         (progn
+           (mtm.session::set-session-pty-output
+            session
+            (new-test-octets #xe4))
+           (mtm.session::set-session-terminated session)
+           (check (screen-has-text-p terminal (string (code-char #xfffd)))
+                  "Session termination must flush pending UTF-8 bytes."))
+      (del-session-manager))))
+
 (defun capture-platform-output (function)
   "Capture bytes written through the platform output boundary."
   (let ((bytes (new-test-octets))

@@ -96,6 +96,7 @@
    (reader-thread
     :initform nil
     :accessor session-reader-thread)
+   ;; Store incomplete UTF-8 projection bytes between PTY reads.
    (pending-bytes
     :initform nil
     :accessor session-pending-bytes)
@@ -428,6 +429,22 @@
           (push attachment detached))))
     detached))
 
+;; Apply decoded TEXT to SESSION's terminal projection while locked.
+(defun set-session-terminal-text-under-lock (session text)
+  "Apply decoded TEXT while SESSION is locked."
+  (when (plusp (length text))
+    (set-terminal-input (managed-terminal session) text)
+    (dolist (event (get-terminal-screen-events (managed-terminal session)))
+      (case event
+        (:enter
+         (setf (managed-session-full-screen-p session) t
+               (managed-session-full-screen-owner session)
+               (or (managed-session-full-screen-owner session)
+                   (first (session-attachments session)))))
+        (:leave
+         (setf (managed-session-full-screen-p session) nil
+               (managed-session-full-screen-owner session) nil))))))
+
 ;; Update SESSION's projection and detect alternate-screen changes.
 (defun set-session-pty-output (session bytes)
   "Update SESSION's display projection and broadcast raw BYTES."
@@ -437,18 +454,7 @@
         (multiple-value-bind (text pending)
             (get-utf8-chunk bytes (session-pending-bytes session))
           (setf (session-pending-bytes session) pending)
-          (when (plusp (length text))
-            (set-terminal-input (managed-terminal session) text))
-            (dolist (event (get-terminal-screen-events (managed-terminal session)))
-            (case event
-              (:enter
-               (setf (managed-session-full-screen-p session) t
-                     (managed-session-full-screen-owner session)
-                     (or (managed-session-full-screen-owner session)
-                         (first (session-attachments session)))))
-              (:leave
-               (setf (managed-session-full-screen-p session) nil
-                     (managed-session-full-screen-owner session) nil))))
+          (set-session-terminal-text-under-lock session text)
           (setf detached (set-session-output-under-lock session bytes)))))
     (dolist (attachment detached)
       (del-active-attachment attachment))))
@@ -459,6 +465,17 @@
   (let ((attachments nil))
     (with-lock-held ((session-lock session))
       (unless (managed-session-terminated-p session)
+        (when (session-pending-bytes session)
+          ;; Decode pending bytes as replacement text before termination.
+          (let ((text
+                  (nth-value
+                   0
+                   (get-utf8-chunk
+                    (session-pending-bytes session)
+                    nil
+                    t))))
+            (setf (session-pending-bytes session) nil)
+            (set-session-terminal-text-under-lock session text)))
         (setf (managed-session-running-p session) nil
               (managed-session-terminated-p session) t
               attachments (session-attachments session)

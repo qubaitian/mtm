@@ -19,25 +19,6 @@
     (setf (aref result (length octets)) octet)
     result))
 
-(defun utf8-continuation-p (octet)
-  (= (logand octet #xc0) #x80))
-
-;; Treat malformed or incomplete UTF-8 input as one byte.
-(defun get-utf8-sequence-length (octets start)
-  (let* ((first (aref octets start))
-         (expected (cond
-                     ((<= #x00 first #x7f) 1)
-                     ((<= #xc2 first #xdf) 2)
-                     ((<= #xe0 first #xef) 3)
-                     ((<= #xf0 first #xf4) 4)
-                     (t 1))))
-    (if (and (> expected 1)
-             (<= (+ start expected) (length octets))
-             (loop for index from (1+ start) below (+ start expected)
-                   always (utf8-continuation-p (aref octets index))))
-        expected
-        1)))
-
 ;; Account for tabs and caret notation.
 (defun get-editor-cell-width (octets position column)
   (cond
@@ -272,7 +253,7 @@ The provider receives a prefix string and returns complete strings."
   (loop with column = 0
         for position = start then (+ position length)
         for length = (and (< position end)
-                          (get-utf8-sequence-length buffer position))
+                          (get-utf8-character-length buffer position end))
         while length
         do (incf column (get-editor-cell-width buffer position column))
         finally (return column)))
@@ -282,7 +263,7 @@ The provider receives a prefix string and returns complete strings."
   (loop with column = 0
         for position = start then (+ position length)
         for length = (and (< position end)
-                          (get-utf8-sequence-length buffer position))
+                          (get-utf8-character-length buffer position end))
         while length
         for width = (get-editor-cell-width buffer position column)
         do (when (>= column target)
@@ -374,23 +355,18 @@ The provider receives a prefix string and returns complete strings."
     (set-editor-history-navigation editor)
     :changed))
 
-;; Walk backward across UTF-8 continuation bytes.
+;; Find the previous Editor character through Babel's boundary query.
 (defun get-editor-previous-character-start (editor)
-  (let ((cursor (get-editor-cursor editor))
-        (buffer (get-editor-buffer editor)))
-    (when (> cursor 0)
-      (loop with start = (1- cursor)
-            while (and (> start 0)
-                       (utf8-continuation-p (aref buffer start)))
-            do (decf start)
-            finally (return start)))))
+  (get-utf8-previous-character-start
+   (get-editor-buffer editor)
+   (get-editor-cursor editor)))
 
 ;; Return the next UTF-8 boundary, or NIL at buffer end.
 (defun get-editor-next-character-end (editor)
   (let ((cursor (get-editor-cursor editor)))
     (when (< cursor (length (get-editor-buffer editor)))
       (+ cursor
-         (get-utf8-sequence-length (get-editor-buffer editor) cursor)))))
+         (get-utf8-character-length (get-editor-buffer editor) cursor)))))
 
 (defun set-editor-cursor-left (editor)
   (multiple-value-bind (selection-start selection-end)
@@ -837,7 +813,7 @@ FLUSH-P resolves one pending standalone Escape key."
                            column 0
                            start-column 0)
                      (incf index))
-                   (let* ((length (get-utf8-sequence-length buffer index))
+                   (let* ((length (get-utf8-character-length buffer index))
                           (cell-width (get-editor-cell-width buffer index column)))
                      (when (> (+ column cell-width) width)
                        (push (new-editor-screen-line
@@ -957,7 +933,7 @@ FLUSH-P resolves one pending standalone Escape key."
                 (setf column 0)
                 (incf index))
                (t
-                (let* ((length (get-utf8-sequence-length buffer index))
+                (let* ((length (get-utf8-character-length buffer index))
                        (cell-width (get-editor-cell-width buffer index column))
                        (selected-p
                          (and selection-start

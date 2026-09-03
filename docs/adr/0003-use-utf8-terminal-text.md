@@ -10,5 +10,5 @@ accepted
 
 ## Consequences
 
-Malformed UTF-8 needs a defined replacement behavior later.
+Malformed UTF-8 uses the replacement character in terminal projection text.
 Unicode cell width remains outside the first emulator subset.

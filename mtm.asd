@@ -1,7 +1,7 @@
 (asdf:defsystem "mtm"
   :description "MTM provides a small Common Lisp terminal multiplexer."
   :version "0.1.0"
-  :depends-on ("bordeaux-threads" "cffi")
+  :depends-on ("bordeaux-threads" "cffi" "babel")
   :serial t
   :components ((:file "src/package")
                (:file "src/utf8")
