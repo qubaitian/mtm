@@ -651,6 +651,98 @@
       (check (= (mtm.editor::get-editor-render-cursor-column render) 0)
              "Wrap-boundary cursor must start at column zero."))))
 
+(deftest editor-area-completes-and-navigates-candidates ()
+  (let ((editor
+          (mtm.editor:new-editor
+           :completion-provider
+           (lambda (prefix)
+             (check (string= prefix "f")
+                    "Completion provider received the wrong prefix.")
+             '("foo" "far")))))
+    (mtm.editor::set-editor-buffer-octets editor (get-utf8 "f"))
+    (check (eq (mtm.editor:set-editor-key editor :tab) :changed)
+           "Tab must open the Completion menu.")
+    (check (mtm.editor:get-editor-completion-active-p editor)
+           "The Completion menu must remain active.")
+    (check (eq (mtm.editor:set-editor-key editor :down) :changed)
+           "Down must move the Completion selection.")
+    (check (= (mtm.editor::get-editor-completion-index editor) 1)
+           "Down must select the second candidate.")
+    (check (eq (mtm.editor:set-editor-key editor :enter) :changed)
+           "Enter must accept the selected candidate.")
+    (check (string= "far"
+                    (bytes-to-string (mtm.editor::get-editor-buffer editor)))
+           "Enter must replace the Completion prefix.")
+    (check (not (mtm.editor:get-editor-completion-active-p editor))
+           "Accepting a candidate must close the Completion menu.")))
+
+(deftest editor-area-completion-closes-before-normal-input ()
+  (let ((editor
+          (mtm.editor:new-editor
+           :completion-provider
+           (lambda (prefix)
+             (declare (ignore prefix))
+             '("foo" "far")))))
+    (mtm.editor::set-editor-buffer-octets editor (get-utf8 "f"))
+    (mtm.editor:set-editor-key editor :tab)
+    (check (eq (mtm.editor:set-editor-byte editor (char-code #\x)) :changed)
+           "Normal input must continue after menu dismissal.")
+    (check (string= "fx"
+                    (bytes-to-string (mtm.editor::get-editor-buffer editor)))
+           "Normal input must append after menu dismissal.")
+    (check (not (mtm.editor:get-editor-completion-active-p editor))
+           "Normal input must close the Completion menu.")))
+
+(deftest editor-area-completion-extends-common-prefix ()
+  (let ((editor
+          (mtm.editor:new-editor
+           :completion-provider
+           (lambda (prefix)
+             (declare (ignore prefix))
+             '("foobar" "foobaz")))))
+    (mtm.editor::set-editor-buffer-octets editor (get-utf8 "f"))
+    (check (eq (mtm.editor:set-editor-key editor :tab) :changed)
+           "Tab must extend a shared Completion prefix.")
+    (check (string= "fooba"
+                    (bytes-to-string (mtm.editor::get-editor-buffer editor)))
+           "Tab must insert the longest shared Completion prefix.")
+    (check (mtm.editor:get-editor-completion-active-p editor)
+           "A shared prefix extension must keep the menu active.")))
+
+(deftest editor-area-renders-completion-menu-as-ansi ()
+  (let ((editor
+          (mtm.editor:new-editor
+           :completion-provider
+           (lambda (prefix)
+             (declare (ignore prefix))
+             '("foo" "far")))))
+    (mtm.editor::set-editor-buffer-octets editor (get-utf8 "f"))
+    (mtm.editor:set-editor-key editor :tab)
+    (let ((render (mtm.editor:set-editor-render editor nil 40 8 0)))
+      (check (= (mtm.editor::get-editor-render-rows render) 3)
+             "The render must include two Completion menu rows."))
+    (let ((output
+            (bytes-to-string
+             (capture-platform-output
+              (lambda ()
+                (mtm.editor:set-editor-render editor 1 40 8 0))))))
+      (check (search "foo" output)
+             "The ANSI Completion menu must contain the first candidate.")
+      (check (search "far" output)
+             "The ANSI Completion menu must contain the second candidate.")
+      (check (search (format nil "~C[7m" #\Escape) output)
+             "The ANSI Completion menu must highlight its selection."))))
+
+(deftest editor-area-flushes-standalone-escape ()
+  (let ((parser (mtm.editor:new-input-parser)))
+    (check (null (mtm.editor:set-input-parser-events
+                 parser (new-test-octets 27)))
+           "The parser must keep a possible Escape sequence pending.")
+    (check (equal (mtm.editor:set-input-parser-events
+                   parser (new-test-octets) :flush-p t)
+                  '((:key :escape)))
+           "The parser must flush standalone Escape as a key.")))
+
 (deftest editor-area-keeps-keys-until-submission ()
   (let ((frontend
           (mtm.frontend::new-session-frontend :name "alpha" :rows 6 :columns 32)))

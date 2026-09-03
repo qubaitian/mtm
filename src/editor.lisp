@@ -48,14 +48,18 @@
     ;; ponytail: one-cell Unicode width; add a width table if needed.
     (t 1)))
 
+;; Store Editor completion state beside the Edit buffer.
 ;; Keep bytes so submissions preserve spaces and UTF-8 text.
 (defstruct (editor
-            (:constructor new-editor (&key (history-box (cons nil nil))))
+            (:constructor new-editor
+                (&key (history-box (cons nil nil)) completion-provider))
             (:conc-name get-editor-))
+  ;; Store the complete Edit buffer as raw UTF-8 bytes.
   (buffer (new-octets))
   ;; Store cursor offsets as byte positions.
   (cursor 0)
   ;; Shared Session History lives in the car of this box.
+  ;; Share this History box across Attachments.
   history-box
   ;; NIL means the cursor is outside history navigation.
   history-index
@@ -65,7 +69,180 @@
   preferred-column
   ;; Store the mouse anchor while selecting text.
   selection-anchor
-  mouse-selecting-p)
+  ;; Track whether the mouse is selecting text.
+  mouse-selecting-p
+  ;; Call this function with the current Completion prefix.
+  completion-provider
+  ;; Keep complete candidates currently shown by the Completion menu.
+  completion-candidates
+  ;; Store the selected candidate's absolute index.
+  (completion-index 0)
+  ;; Store the first candidate currently shown.
+  (completion-offset 0)
+  ;; Store the byte range replaced by the selected candidate.
+  (completion-start 0)
+  (completion-end 0))
+
+(defconstant +editor-completion-max-visible+ 8)
+
+;; Return true when the Completion menu has candidates to show.
+(defun get-editor-completion-active-p (editor)
+  (not (null (get-editor-completion-candidates editor))))
+
+;; Close the Completion menu and clear its selection state.
+(defun del-editor-completion (editor)
+  (when (get-editor-completion-active-p editor)
+    (setf (get-editor-completion-candidates editor) nil
+          (get-editor-completion-index editor) 0
+          (get-editor-completion-offset editor) 0
+          (get-editor-completion-start editor) 0
+          (get-editor-completion-end editor) 0)
+    :changed))
+
+;; Set the callback that supplies Completion candidates.
+(defun set-editor-completion-provider (editor provider)
+  "Set EDITOR's Completion provider.
+The provider receives a prefix string and returns complete strings."
+  (check-type provider (or null function))
+  (setf (get-editor-completion-provider editor) provider)
+  (del-editor-completion editor)
+  provider)
+
+;; Return true for bytes allowed inside a Completion prefix.
+(defun get-editor-completion-byte-p (octet)
+  (or (<= 65 octet 90)
+      (<= 97 octet 122)
+      (<= 48 octet 57)
+      (member octet '(33 36 37 38 42 43 45 46 47 58 60 61 62 63 64
+                      94 95 126))))
+
+;; Return the current Completion prefix and its byte range.
+(defun get-editor-completion-prefix (editor)
+  (let* (;; Read the current Edit buffer without changing it.
+         (buffer (get-editor-buffer editor))
+         ;; Read the Insertion point as a byte position.
+         (cursor (get-editor-cursor editor))
+         ;; Stop at the current logical line.
+         (line-start (get-editor-line-start buffer cursor))
+         ;; Move backward across word-like prefix bytes.
+         (start cursor))
+    (loop while (and (> start line-start)
+                     (get-editor-completion-byte-p
+                      (aref buffer (1- start))))
+          do (decf start))
+    (values (nth-value 0
+                       (get-utf8-chunk (subseq buffer start cursor)))
+            start
+            cursor)))
+
+;; Return provider candidates that match the current Completion prefix.
+(defun get-completion-candidates (editor prefix)
+  (let* (;; Read the configured Completion provider.
+         (provider (get-editor-completion-provider editor)))
+    (when provider
+      (handler-case
+          (let (;; Ask the provider for complete candidate strings.
+                (candidates (funcall provider prefix)))
+            (when (listp candidates)
+              (remove-duplicates
+               (remove-if-not
+                (lambda (candidate)
+                  (and (stringp candidate)
+                       (plusp (length candidate))
+                       (<= (length prefix) (length candidate))
+                       (string= prefix candidate
+                                :end2 (length prefix))))
+                candidates)
+               :test #'string=)))
+        (error () nil)))))
+
+;; Return the longest shared character prefix of CANDIDATES.
+(defun get-completion-common-prefix (candidates)
+  (if (null candidates)
+      ""
+      (let* (;; Use the first candidate as the comparison source.
+             (first (first candidates))
+             ;; Start with every character in the first candidate.
+             (limit (length first)))
+        (dolist (candidate (rest candidates))
+          (setf limit
+                (min limit
+                     (or (mismatch first candidate :test #'char=)
+                         (length first)))))
+        (subseq first 0 limit))))
+
+;; Open the Completion menu for one prefix range.
+(defun set-editor-completion-menu (editor candidates start end)
+  (setf (get-editor-completion-candidates editor) candidates
+        (get-editor-completion-index editor) 0
+        (get-editor-completion-offset editor) 0
+        (get-editor-completion-start editor) start
+        (get-editor-completion-end editor) end)
+  :changed)
+
+;; Move the selected Completion candidate by DELTA positions.
+(defun set-editor-completion-selection (editor delta)
+  (let* (;; Read all active candidates.
+         (candidates (get-editor-completion-candidates editor))
+         ;; Count candidates for circular movement.
+         (count (length candidates))
+         ;; Wrap the selected index at either list boundary.
+         (index (mod (+ (get-editor-completion-index editor) delta)
+                     count))
+         ;; Keep the selected candidate visible in the menu.
+         (offset (get-editor-completion-offset editor)))
+    (setf (get-editor-completion-index editor) index
+          (get-editor-completion-offset editor)
+          (cond
+            ((< index offset) index)
+            ((>= index (+ offset +editor-completion-max-visible+))
+             (- index (1- +editor-completion-max-visible+)))
+            (t offset)))
+    :changed))
+
+;; Accept the selected Completion candidate and close the menu.
+(defun set-editor-completion-accept (editor)
+  (let* (;; Read the selected candidate.
+         (candidate
+           (nth (get-editor-completion-index editor)
+                (get-editor-completion-candidates editor)))
+         ;; Read the prefix range captured when the menu opened.
+         (start (get-editor-completion-start editor))
+         ;; Read the prefix end captured when the menu opened.
+         (end (get-editor-completion-end editor)))
+    (set-editor-buffer-octets editor (get-utf8 candidate) start end)
+    (del-editor-completion editor)
+    :changed))
+
+;; Apply one key while the Completion menu remains active.
+(defun set-editor-completion-key (editor key)
+  (case key
+    (:up (set-editor-completion-selection editor -1))
+    (:down (set-editor-completion-selection editor 1))
+    ((:enter :tab) (set-editor-completion-accept editor))
+    (:escape (del-editor-completion editor))))
+
+;; Start or continue Completion from the current Insertion point.
+(defun set-editor-completion (editor)
+  (if (get-editor-completion-active-p editor)
+      (set-editor-completion-accept editor)
+      (multiple-value-bind (prefix start end)
+          (get-editor-completion-prefix editor)
+        (let (;; Read matching candidates from the configured provider.
+              (candidates (get-completion-candidates editor prefix)))
+          (when candidates
+            (if (= (length candidates) 1)
+                (set-editor-buffer-octets
+                 editor (get-utf8 (first candidates)) start end)
+                (let ((common-prefix
+                        (get-completion-common-prefix candidates)))
+                  (if (> (length common-prefix) (length prefix))
+                      (progn
+                        (set-editor-buffer-octets
+                         editor (get-utf8 common-prefix) start end)
+                        (set-editor-completion-menu
+                         editor candidates start (get-editor-cursor editor)))
+                      (set-editor-completion-menu editor candidates start end)))))))))
 
 (defun get-editor-history-entries (editor)
   (car (get-editor-history-box editor)))
@@ -147,13 +324,16 @@
         (get-editor-history-draft editor) (new-octets))
   (del-editor-selection-state editor))
 
-;; Insert raw bytes at the cursor without decoding them.
-(defun set-editor-buffer-octets (editor octets)
+;; Insert raw bytes at the cursor or replace explicit bounds.
+(defun set-editor-buffer-octets
+    (editor octets &optional explicit-start explicit-end)
   (multiple-value-bind (selection-start selection-end)
       (get-editor-selection-range editor)
     (let* ((old (get-editor-buffer editor))
-           (start (or selection-start (get-editor-cursor editor)))
-           (end (or selection-end start))
+           ;; Prefer explicit bounds for Completion replacement.
+           (start (or explicit-start selection-start (get-editor-cursor editor)))
+           ;; Otherwise replace the current Text selection.
+           (end (or explicit-end selection-end start))
            (inserted (length octets))
            (result (new-octets (+ (- (length old) (- end start)) inserted))))
       (when (or (< start end) (plusp inserted))
@@ -322,8 +502,8 @@
         (when end
           (del-editor-buffer-range editor (get-editor-cursor editor) end)))))
 
-;; Map decoded terminal keys to Editor actions and History navigation.
-(defun set-editor-key (editor key)
+;; Apply keys that do not require Completion menu handling.
+(defun set-editor-standard-key (editor key)
   (case key
     (:left (set-editor-cursor-left editor))
     (:right (set-editor-cursor-right editor))
@@ -341,8 +521,24 @@
             (when text
               (values :cut text))))
     (:paste (values :paste-system nil))
+    (:enter (set-editor-enter editor))
+    (:escape (values :forward (vector 27)))
     (:history-up (set-editor-history-up editor))
     (:history-down (set-editor-history-down editor))))
+
+;; Map decoded terminal keys to Editor actions and History navigation.
+(defun set-editor-key (editor key)
+  (if (get-editor-completion-active-p editor)
+      (if (member key '(:up :down :enter :tab :escape))
+          (set-editor-completion-key editor key)
+          (let (;; Remember the redraw caused by menu dismissal.
+                (closed (del-editor-completion editor)))
+            (multiple-value-bind (action data)
+                (set-editor-standard-key editor key)
+              (values (or action closed) data))))
+      (if (eq key :tab)
+          (set-editor-completion editor)
+          (set-editor-standard-key editor key))))
 
 ;; Copy submitted bytes because later edits replace the active buffer.
 (defun set-editor-history (editor)
@@ -400,11 +596,15 @@
                  (incf index)))
     (subseq result 0 count)))
 
+;; Insert Pasted content after closing any active Completion menu.
 (defun set-editor-paste (editor octets)
-  (set-editor-buffer-octets editor (get-pasted-newlines octets)))
+  (let (;; Remember the redraw caused by menu dismissal.
+        (closed (del-editor-completion editor)))
+    (or (set-editor-buffer-octets editor (get-pasted-newlines octets))
+        closed)))
 
 ;; Handle control bytes locally; forward unsupported bytes to the shell.
-(defun set-editor-byte (editor octet)
+(defun set-editor-standard-byte (editor octet)
   (cond
     ((or (= octet 10) (= octet 13)) (set-editor-enter editor))
     ((or (= octet 8) (= octet 127)) (values (del-editor-character-backward editor) nil))
@@ -422,6 +622,29 @@
     ((= octet 16) (values (set-editor-history-up editor) nil))
     ((>= octet 32) (values (set-editor-buffer-octets editor (vector octet)) nil))
     (t (values :forward (vector octet)))))
+
+;; Handle Completion keys before normal byte insertion.
+(defun set-editor-byte (editor octet)
+  (cond
+    ((= octet 9)
+     (or (set-editor-key editor :tab)
+         (set-editor-standard-byte editor octet)))
+    ((or (= octet 10) (= octet 13))
+     (if (get-editor-completion-active-p editor)
+         (set-editor-key editor :enter)
+         (set-editor-standard-byte editor octet)))
+    ((and (= octet 27) (get-editor-completion-active-p editor))
+     (set-editor-key editor :escape))
+    ((get-editor-completion-active-p editor)
+     (let (;; Remember the redraw caused by menu dismissal.
+           (closed (del-editor-completion editor)))
+       (multiple-value-bind (action data)
+           (set-editor-standard-byte editor octet)
+         (values (or action closed) data))))
+    ((= octet 27)
+     (values :forward (vector octet)))
+    (t
+     (set-editor-standard-byte editor octet))))
 
 ;; Delimiters for terminal bracketed paste mode.
 (defparameter +paste-start+ #(27 91 50 48 48 126))
@@ -474,7 +697,9 @@
             +escape-keys+)))
 
 ;; Preserve partial terminal input across reads.
-(defun set-input-parser-events (parser octets)
+(defun set-input-parser-events (parser octets &key flush-p)
+  "Parse OCTETS into Editor events.
+FLUSH-P resolves one pending standalone Escape key."
   (let (events)
     (labels ((set-parser-event (type payload)
                (push (list type payload) events))
@@ -533,6 +758,12 @@
                                 (set-parser-pending)
                                 (when (eq before (get-input-parser-pending parser))
                                   (return)))))))
+      (when (and flush-p
+                 (octets-equal-p
+                  (get-input-parser-pending parser)
+                  (vector 27)))
+        (set-parser-event :key :escape)
+        (setf (get-input-parser-pending parser) (new-octets)))
       (nreverse events))))
 
 ;; Allow rendering tests to run without an output descriptor.
@@ -560,6 +791,8 @@
             (:conc-name get-editor-render-))
   ;; One-based terminal row where the render starts.
   start-row
+  ;; One-based terminal row where the Editor text starts.
+  buffer-start-row
   ;; Column where the visible edit buffer begins.
   start-column
   ;; Number of terminal rows occupied by the render.
@@ -637,10 +870,13 @@
               do (return index)
             finally (return (1- (length lines))))))
 
+;; Map terminal cells to byte positions in the Editor text.
 (defun get-editor-render-position (render column row &key clamp-p)
   (let* ((lines (get-editor-render-lines render))
-         (line-index (- row (get-editor-render-start-row render))))
+         ;; Map mouse rows from the Editor text, not its Completion menu.
+         (line-index (- row (get-editor-render-buffer-start-row render))))
     (when (and lines
+               (>= row (get-editor-render-buffer-start-row render))
                (or clamp-p
                    (<= 0 line-index (1- (length lines)))))
       (setf line-index
@@ -660,41 +896,50 @@
        (zerop (logand button 28))
        (zerop (logand button 64))))
 
+;; Apply one local mouse report to the Editor area.
 (defun set-editor-mouse (editor render button column row press-p)
-  (when (and render (editor-left-mouse-p button))
-    (let ((motion-p (plusp (logand button 32))))
-      (cond
-        ((and press-p (not motion-p))
-         (let ((position (get-editor-render-position render column row)))
-           (when position
-             (setf (get-editor-cursor editor) position
-                   (get-editor-selection-anchor editor) position
-                   (get-editor-mouse-selecting-p editor) t
-                   (get-editor-preferred-column editor) nil)
-             :changed)))
-        ((and press-p (get-editor-mouse-selecting-p editor))
-         (let ((old (get-editor-cursor editor))
-               (position
-                 (get-editor-render-position
-                  render column row :clamp-p t)))
-           (when (and position (/= old position))
-             (setf (get-editor-cursor editor) position
-                   (get-editor-preferred-column editor) nil)
-             :changed)))
-        ((and (not press-p) (get-editor-mouse-selecting-p editor))
-         (let ((old (get-editor-cursor editor))
-               (position
-                 (get-editor-render-position
-                  render column row :clamp-p t)))
-           (when position
-             (setf (get-editor-cursor editor) position))
-           (setf (get-editor-mouse-selecting-p editor) nil)
-           (when (= (get-editor-cursor editor)
-                    (or (get-editor-selection-anchor editor)
-                        (get-editor-cursor editor)))
-             (setf (get-editor-selection-anchor editor) nil))
-           (when (/= old (get-editor-cursor editor))
-             :changed)))))))
+  (let (;; Close the Completion menu for every local left-button action.
+        (closed
+          (and (get-editor-completion-active-p editor)
+               (editor-left-mouse-p button)
+               (del-editor-completion editor))))
+    (or
+     (when (and render (editor-left-mouse-p button))
+       (let (;; Track drag reports separately from button presses.
+             (motion-p (plusp (logand button 32))))
+         (cond
+           ((and press-p (not motion-p))
+            (let ((position (get-editor-render-position render column row)))
+              (when position
+                (setf (get-editor-cursor editor) position
+                      (get-editor-selection-anchor editor) position
+                      (get-editor-mouse-selecting-p editor) t
+                      (get-editor-preferred-column editor) nil)
+                :changed)))
+           ((and press-p (get-editor-mouse-selecting-p editor))
+            (let ((old (get-editor-cursor editor))
+                  (position
+                    (get-editor-render-position
+                     render column row :clamp-p t)))
+              (when (and position (/= old position))
+                (setf (get-editor-cursor editor) position
+                      (get-editor-preferred-column editor) nil)
+                :changed)))
+           ((and (not press-p) (get-editor-mouse-selecting-p editor))
+            (let ((old (get-editor-cursor editor))
+                  (position
+                    (get-editor-render-position
+                     render column row :clamp-p t)))
+              (when position
+                (setf (get-editor-cursor editor) position))
+              (setf (get-editor-mouse-selecting-p editor) nil)
+              (when (= (get-editor-cursor editor)
+                       (or (get-editor-selection-anchor editor)
+                           (get-editor-cursor editor)))
+                (setf (get-editor-selection-anchor editor) nil))
+              (when (/= old (get-editor-cursor editor))
+                :changed))))))
+     closed)))
 
 ;; Render control bytes visibly while tracking the terminal cursor column.
 (defun set-editor-display
@@ -750,6 +995,116 @@
                                  (format nil "~C[27m" (code-char 27))))
            (return (values row column))))
 
+;; Align the Completion menu with the current Completion prefix.
+(defun get-editor-completion-column
+    (editor buffer lines cursor-line start-column width)
+  (let* (;; Read the captured prefix start.
+         (prefix-start (get-editor-completion-start editor))
+         ;; Read the visual line containing the Insertion point.
+         (line (nth cursor-line lines))
+         ;; Read that visual line's byte bounds.
+         (line-start (get-editor-screen-line-start line))
+         (line-end (get-editor-screen-line-end line))
+         ;; Keep the first visual line's starting column.
+         (line-start-column
+           (if (zerop cursor-line)
+               start-column
+               (get-editor-screen-line-start-column line)))
+         ;; Place the menu at the prefix start when it remains visible.
+         (column
+           (if (<= line-start prefix-start line-end)
+               (+ line-start-column
+                  (get-editor-display-column
+                   buffer line-start prefix-start))
+               line-start-column)))
+    (max 0 (min column (1- width)))))
+
+;; Draw visible Completion candidates as ANSI menu rows.
+(defun set-editor-completion-display (editor output-fd row column count)
+  (let* (;; Read all candidates in provider order.
+         (candidates (get-editor-completion-candidates editor))
+         ;; Read the first visible candidate's absolute index.
+         (offset (get-editor-completion-offset editor))
+         ;; Stop before the next hidden candidate.
+         (end (min (length candidates) (+ offset count)))
+         ;; Read the selected candidate's absolute index.
+         (selected (get-editor-completion-index editor))
+         ;; Use one-based terminal columns.
+         (terminal-column (1+ column)))
+    (loop for candidate in (subseq candidates offset end)
+          for index from offset
+          for menu-row from row
+          do (set-terminal-ascii
+              output-fd
+              (format nil "~C[~D;~DH~C[K~C[~Am"
+                      (code-char 27)
+                      menu-row
+                      terminal-column
+                      (code-char 27)
+                      (code-char 27)
+                      (if (= index selected) 7 2)))
+             (set-terminal-ascii output-fd candidate)
+             (set-terminal-ascii
+              output-fd
+              (format nil "~C[0m~C[K" (code-char 27) (code-char 27))))))
+
+;; Choose menu rows that remain inside the Editor area Viewport.
+(defun get-editor-completion-layout
+    (editor buffer lines cursor-line cursor-row start-column width height
+     buffer-start-row)
+  (let* (;; Keep the buffer's final visible row inside the Viewport.
+         (buffer-end-row (+ buffer-start-row (1- (length lines))))
+         ;; Convert the cursor row to one-based terminal coordinates.
+         (cursor-absolute-row (+ buffer-start-row cursor-row))
+         ;; Read all candidates to calculate remaining menu rows.
+         (candidates (get-editor-completion-candidates editor))
+         ;; Read the first candidate currently shown.
+         (offset (get-editor-completion-offset editor))
+         ;; Reserve at most the configured number of menu rows.
+         (desired-count
+           (min +editor-completion-max-visible+
+                (- (length candidates) offset)))
+         ;; Count rows available below the cursor.
+         (below-count (max 0 (- height cursor-absolute-row)))
+         ;; Count rows available above the cursor.
+         (above-count (max 0 (1- cursor-absolute-row)))
+         ;; Prefer a complete menu below the cursor.
+         (menu-count
+           (cond
+             ((>= below-count desired-count) desired-count)
+             ((>= above-count desired-count) desired-count)
+             ((>= below-count above-count) below-count)
+             (t above-count)))
+         ;; Place the menu above only when below space is insufficient.
+         (above-p (and (plusp menu-count)
+                       (< below-count desired-count)
+                       (>= above-count below-count)))
+         ;; Compute the first menu row.
+         (menu-row
+           (when (plusp menu-count)
+             (if above-p
+                 (- cursor-absolute-row menu-count)
+                 (1+ cursor-absolute-row))))
+         ;; Align the menu with the current Completion prefix.
+         (menu-column
+           (when (plusp menu-count)
+             (get-editor-completion-column
+              editor buffer lines cursor-line start-column width)))
+         ;; Extend the render to include the menu rows.
+         (render-start-row (if menu-row
+                               (min buffer-start-row menu-row)
+                               buffer-start-row))
+         ;; Find the last row occupied by text or the menu.
+         (render-end-row (if menu-row
+                             (max buffer-end-row (+ menu-row (1- menu-count)))
+                             buffer-end-row)))
+    (values menu-row
+            menu-column
+            menu-count
+            render-start-row
+            (1+ (- render-end-row render-start-row))
+            (- cursor-absolute-row render-start-row))))
+
 ;; Clear only the editor text, then leave the shell prompt intact.
 ;; Erase the visible Editor area and restore the shell position.
 (defun del-editor-render (render output-fd)
@@ -770,26 +1125,35 @@
 ;; Render only the screen lines around the cursor.
 (defun set-editor-render
     (editor output-fd width height start-column &optional (start-row 1))
-  (let* ((buffer (get-editor-buffer editor))
+  (let* (;; Read the complete Edit buffer.
+         (buffer (get-editor-buffer editor))
+         ;; Split the buffer into visible terminal rows.
          (lines (get-editor-screen-lines buffer width start-column))
-         (cursor-line (get-editor-screen-line-index lines (get-editor-cursor editor)))
+         ;; Find the visual row containing the Insertion point.
+         (cursor-line
+           (get-editor-screen-line-index lines (get-editor-cursor editor)))
+         ;; Keep the cursor near the bottom of the Viewport.
          (first-line (max 0 (- cursor-line (1- height))))
+         ;; Select the visible Editor rows.
          (visible-lines
            (subseq lines first-line (min (length lines) (+ first-line height))))
+         ;; Preserve the starting column after vertical scrolling.
          (visible-start-column
            (if (zerop first-line)
                start-column
                (get-editor-screen-line-start-column (first visible-lines))))
+         ;; Convert the one-based terminal row to a zero-based offset.
          (visible-start-row
-           ;; Convert the one-based terminal row to a zero-based offset.
            (max 0
                 (min (1- start-row)
-                     (- height (length visible-lines))))))
+                     (- height (length visible-lines)))))
+         ;; Store the buffer's one-based terminal start row.
+         (buffer-start-row (1+ visible-start-row)))
     (multiple-value-bind (selection-start selection-end)
         (get-editor-selection-range editor)
       (set-terminal-ascii
        output-fd
-       (format nil "~C[~D;1H" (code-char 27) (1+ visible-start-row)))
+       (format nil "~C[~D;1H" (code-char 27) buffer-start-row))
       (set-terminal-ascii output-fd +terminal-return+)
       (loop for line in visible-lines
             for index from 0
@@ -806,27 +1170,50 @@
                 selection-end)
                (when (< (1+ index) (length visible-lines))
                  (set-terminal-ascii output-fd +terminal-return-linefeed+)))
-      (let* ((cursor-row (- cursor-line first-line))
+      (let* (;; Store the cursor row inside the visible buffer.
+             (cursor-row (- cursor-line first-line))
+             ;; Read the visual line containing the cursor.
              (line (nth cursor-line lines))
+             ;; Preserve the visual line's starting terminal column.
              (line-start-column
                (if (zerop cursor-line)
                    start-column
                    (get-editor-screen-line-start-column line)))
+             ;; Measure the cursor column in terminal cells.
              (cursor-column
                (+ line-start-column
                   (get-editor-display-column
                    buffer
                    (get-editor-screen-line-start line)
-                   (get-editor-cursor editor)))))
+                   (get-editor-cursor editor))))
+             ;; Convert the cursor row to one-based terminal coordinates.
+             (cursor-absolute-row (+ buffer-start-row cursor-row)))
         (set-terminal-ascii output-fd +terminal-return+)
         (set-terminal-cursor output-fd "A"
                               (- (1- (length visible-lines)) cursor-row))
         (set-terminal-cursor output-fd "C" cursor-column)
-        (new-editor-render
-         :start-row (1+ visible-start-row)
-         :start-column visible-start-column
-         :rows (length visible-lines)
-         :cursor-row cursor-row
-         :cursor-column cursor-column
-         :buffer buffer
-         :lines visible-lines)))))
+        (multiple-value-bind
+              (menu-row menu-column menu-count render-start-row render-rows
+               render-cursor-row)
+            (get-editor-completion-layout
+             editor buffer lines cursor-line cursor-row start-column width height
+             buffer-start-row)
+          (when (and menu-row (plusp menu-count))
+            (set-editor-completion-display
+             editor output-fd menu-row menu-column menu-count))
+          ;; Restore the Editor cursor after drawing the Completion menu.
+          (set-terminal-ascii
+           output-fd
+           (format nil "~C[~D;~DH"
+                   (code-char 27)
+                   cursor-absolute-row
+                   (1+ cursor-column)))
+          (new-editor-render
+           :start-row render-start-row
+           :buffer-start-row buffer-start-row
+           :start-column visible-start-column
+           :rows render-rows
+           :cursor-row render-cursor-row
+           :cursor-column cursor-column
+           :buffer buffer
+           :lines visible-lines))))))

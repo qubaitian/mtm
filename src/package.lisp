@@ -38,13 +38,16 @@
                 #:get-utf8-chunk)
   (:export
    #:del-editor-selection
+   #:del-editor-completion
    #:del-editor-render
    #:editor-empty-p
+   #:get-editor-completion-active-p
    #:get-editor-selection-text
    #:new-editor
    #:new-input-parser
    #:set-editor-mouse
    #:set-editor-byte
+   #:set-editor-completion-provider
    #:set-editor-key
    #:set-editor-paste
    #:set-editor-render
@@ -224,8 +227,10 @@
                 #:set-active-attachment)
   (:import-from #:mtm.editor
                 #:del-editor-render
+                #:del-editor-completion
                 #:del-editor-selection
                 #:editor-empty-p
+                #:get-editor-completion-active-p
                 #:new-editor
                 #:new-input-parser
                 #:set-editor-mouse

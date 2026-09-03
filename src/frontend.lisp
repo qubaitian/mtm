@@ -426,7 +426,8 @@
     (when (and editor
                output-fd
                (not (session-frontend-full-screen-p frontend)))
-      (if (editor-empty-p editor)
+      (if (and (editor-empty-p editor)
+               (not (get-editor-completion-active-p editor)))
           (del-frontend-editor-render frontend)
           (progn
             (set-frontend-size frontend)
@@ -471,25 +472,27 @@
     (:copy
      (when payload
        (set-system-clipboard payload))
+     (set-frontend-editor-render frontend)
      nil)
     (:cut
      (when (and payload
                 (set-system-clipboard payload))
-       (del-editor-selection (session-frontend-editor frontend))
-       (set-frontend-editor-render frontend))
+       (del-editor-selection (session-frontend-editor frontend)))
+     (set-frontend-editor-render frontend)
      nil)
     (:paste-system
      (let ((text (get-system-clipboard)))
        (when text
-         (when (set-editor-paste
-                (session-frontend-editor frontend)
-                (get-utf8 text))
-           (set-frontend-editor-render frontend))))
+         (set-editor-paste
+          (session-frontend-editor frontend)
+          (get-utf8 text))))
+     (set-frontend-editor-render frontend)
      nil)
     (:detach
      (del-frontend-editor-render frontend)
      :detach)
     (:forward
+     (del-editor-completion (session-frontend-editor frontend))
      (del-frontend-editor-render frontend)
      (set-session-bytes frontend payload)
      nil)
@@ -516,24 +519,27 @@
             (setf detach-p t)))))
     detach-p))
 
-(defun set-editor-chunk (frontend bytes)
-  "Parse BYTES for FRONTEND's Editor area. Return true to detach."
+(defun set-editor-chunk (frontend bytes &key flush-p)
+  "Parse BYTES for FRONTEND's Editor area.
+FLUSH-P resolves one pending standalone Escape key."
   (set-editor-events
    frontend
    (set-input-parser-events
     (session-frontend-input-parser frontend)
-    bytes)))
+    bytes
+    :flush-p flush-p)))
 
 ;; Send input BYTES through the current frontend mode.
-(defun set-frontend-chunk (frontend bytes)
-  "Send BYTES to full-screen transport or the Editor area."
+(defun set-frontend-chunk (frontend bytes &key flush-p)
+  "Send BYTES to full-screen transport or the Editor area.
+FLUSH-P resolves one pending standalone Escape key."
   (cond
     ((or (null bytes) (zerop (length bytes))) nil)
     ((session-frontend-full-screen-p frontend)
      (set-session-bytes frontend bytes)
      nil)
     ((session-frontend-editor frontend)
-     (set-editor-chunk frontend bytes))
+     (set-editor-chunk frontend bytes :flush-p flush-p))
     (t
      (set-session-bytes frontend bytes)
      nil)))
@@ -664,7 +670,8 @@
        frontend
        (make-array 1
                    :element-type '(unsigned-byte 8)
-                   :initial-element 27)))))
+                   :initial-element 27)
+       :flush-p t))))
 
 (defun get-frontend-events (frontend)
   "Poll FRONTEND's input and socket descriptors."

@@ -267,6 +267,20 @@ _Avoid_: pasted text
 The position in an Edit buffer where new text enters.
 _Avoid_: editor cursor, caret
 
+**Completion menu**:
+A temporary list of Completion candidates inside the Editor area.
+It closes before unrelated input continues.
+_Avoid_: dropdown, autocomplete popup
+
+**Completion candidate**:
+A complete text option that replaces the current Completion prefix.
+_Avoid_: suggestion, completion suffix
+
+**Completion prefix**:
+The word-like text immediately before the Insertion point.
+The Completion menu replaces this prefix after acceptance.
+_Avoid_: query text, search term
+
 **Text selection**:
 A non-empty continuous range of characters in an Edit buffer.
 _Avoid_: terminal selection, output selection
