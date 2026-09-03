@@ -20,6 +20,16 @@ Other input closes the menu before normal Editor handling.
 The Browser frontend does not add a separate DOM completion component.
 Full-screen transport bypasses the Completion menu.
 
+## Rationale
+
+The Browser terminal sends raw key data through one WebSocket.
+The server-side Editor handles Tab and Completion state.
+The Editor renders menu rows with ANSI control sequences.
+The Browser frontend writes generic output into xterm.js.
+No Completion-specific JSON or DOM path crosses the WebSocket.
+One output path serves local and Browser frontends.
+This keeps Completion behavior consistent across frontends.
+
 ## Consequences
 
 Completion shares the existing Editor redraw and terminal geometry.
