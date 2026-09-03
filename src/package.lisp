@@ -31,6 +31,12 @@
    #:get-utf8-character-length
    #:get-utf8-previous-character-start))
 
+(defpackage #:mtm.completion
+  (:use #:cl)
+  (:export
+   #:get-pinyin-completion-provider
+   #:new-pinyin-completion-provider))
+
 (defpackage #:mtm.editor
   (:use #:cl)
   (:import-from #:mtm.platform
@@ -229,6 +235,8 @@
                 #:set-attachment-input
                 #:set-attachment-terminal-size
                 #:set-active-attachment)
+  (:import-from #:mtm.completion
+                #:get-pinyin-completion-provider)
   (:import-from #:mtm.editor
                 #:del-editor-render
                 #:del-editor-completion

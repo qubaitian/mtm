@@ -114,6 +114,11 @@ Enter at the buffer end submits the Edit buffer.
 Unescaped newlines become one space on Submission.
 Empty Ctrl-D detaches. The Session keeps running.
 Up walks Session History after Reattachment.
+The Editor area reads Chinese Completion from the user 8105 dictionary.
+Place it at `~/.mtm/dictionaries/8105.dict.yaml` before starting MTM.
+Use `character<TAB>pinyin<TAB>weight` lines from Rime dictionaries.
+MTM reads active single-character entries only.
+Type `hao`, press Tab twice, and accept `好`.
 The overlay starts at column 0 and covers the prompt.
 Live PTY output stays raw octets.
 Click and drag in the Editor area to select text.

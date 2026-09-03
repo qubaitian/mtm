@@ -276,6 +276,22 @@ The word-like text immediately before the Insertion point.
 The Completion menu replaces this prefix after acceptance.
 _Avoid_: query text, search term
 
+**Completion provider**:
+A function that maps a Completion prefix to ordered Completion candidates.
+_Avoid_: completion source, suggestion provider
+
+**Pinyin code**:
+The Latin spelling used to identify a Chinese character.
+_Avoid_: pronunciation, romanization
+
+**Pinyin dictionary**:
+A mapping from Pinyin codes to single-character Completion candidates.
+_Avoid_: word dictionary, input method
+
+**User dictionary**:
+The Pinyin dictionary selected and maintained by the user.
+_Avoid_: bundled dictionary, system dictionary
+
 **Text selection**:
 A non-empty continuous range of characters in an Edit buffer.
 _Avoid_: terminal selection, output selection

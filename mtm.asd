@@ -6,6 +6,7 @@
   :components ((:file "src/package")
                (:file "src/utf8")
                (:file "src/platform")
+               (:file "src/completion")
                (:file "src/editor")
                (:file "src/pty")
                (:file "src/service")

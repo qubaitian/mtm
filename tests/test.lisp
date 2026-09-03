@@ -734,6 +734,91 @@
     (check (not (mtm.editor:get-editor-completion-active-p editor))
            "Accepting a candidate must close the Completion menu.")))
 
+;; Return a unique temporary path for a Pinyin dictionary test.
+(defun new-pinyin-test-path ()
+  (merge-pathnames
+   (format nil "mtm-pinyin-~D-~D.dict.yaml"
+           (get-universal-time)
+           (random 1000000))
+   (uiop:temporary-directory)))
+
+;; Write a small Rime dictionary for one provider test.
+(defun set-pinyin-test-dictionary (path)
+  (with-open-file
+      ;; Write the fixture as UTF-8 text.
+      (stream path
+              :direction :output
+              :if-exists :supersede
+              :if-does-not-exist :create
+              :external-format :utf-8)
+    (dolist
+        ;; Include valid, duplicate, and multi-character entries.
+        (line (list (format nil "好~Chao~C3" #\Tab #\Tab)
+                    (format nil "号~Chao~C2" #\Tab #\Tab)
+                    (format nil "好~Chao~C1" #\Tab #\Tab)
+                    (format nil "好好~Chao~C99" #\Tab #\Tab)))
+      (write-line line stream)))
+  path)
+
+;; Remove a temporary Pinyin dictionary after one test.
+(defun del-pinyin-test-dictionary (path)
+  (ignore-errors (delete-file path)))
+
+(deftest pinyin-provider-does-not-use-fallback ()
+  (let (;; Use a missing path to verify fallback behavior.
+        (provider
+          (new-pinyin-completion-provider (new-pinyin-test-path))))
+    (check (null (funcall provider "hao"))
+           "The provider must not use a bundled fallback.")))
+
+(deftest editor-area-completes-pinyin-character ()
+  (let (;; Keep the fixture outside the project tree.
+        (path (new-pinyin-test-path)))
+    (unwind-protect
+         (progn
+           (set-pinyin-test-dictionary path)
+           (let* (;; Load only the test dictionary.
+                  (provider (new-pinyin-completion-provider path))
+                  ;; Read candidates in dictionary order.
+                  (candidates (funcall provider "hao"))
+                  ;; Use the same provider as the Editor area.
+                  (editor
+                    (mtm.editor:new-editor :completion-provider provider)))
+             (check (string= "好" (first candidates))
+                    "The user provider must rank 好 first for hao.")
+             (check (member "号" candidates :test #'string=)
+                    "The user provider must include 号 for hao.")
+             (check (not (member "好好" candidates :test #'string=))
+                    "The provider must reject multi-character entries.")
+             (mtm.editor::set-editor-buffer-octets editor (get-utf8 "hao"))
+             (check (eq (mtm.editor:set-editor-key editor :tab) :changed)
+                    "Tab must open the Pinyin Completion menu.")
+             (check (mtm.editor:get-editor-completion-active-p editor)
+                    "The Pinyin Completion menu must remain active.")
+             (check (eq (mtm.editor:set-editor-key editor :tab) :changed)
+                    "The second Tab must accept the Pinyin candidate.")
+             (check (string= "好"
+                             (nth-value
+                              0
+                              (mtm.utf8:get-utf8-chunk
+                               (mtm.editor::get-editor-buffer editor))))
+                    "The Pinyin candidate must replace hao.")))
+      (del-pinyin-test-dictionary path))))
+
+(deftest frontend-creates-editor-with-pinyin-provider ()
+  (new-session-manager)
+  (unwind-protect
+       (let* ((session (new-session-value "default-completion" :shell "/bin/sh"))
+              (attachment (new-attachment "default-completion"))
+              (frontend
+                (mtm.frontend::new-session-frontend :attachment attachment)))
+         (declare (ignore session))
+         (mtm.frontend::set-frontend-editor frontend)
+         (let ((editor (mtm.frontend::session-frontend-editor frontend)))
+           (check (functionp (mtm.editor::get-editor-completion-provider editor))
+                  "The frontend must attach a default Completion provider.")))
+    (del-session-manager)))
+
 (deftest editor-area-completion-closes-before-normal-input ()
   (let ((editor
           (mtm.editor:new-editor

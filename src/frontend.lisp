@@ -379,7 +379,9 @@
             (setf (session-frontend-editor frontend)
                   (new-editor :history-box
                               (session-history-box
-                               (attachment-session attachment)))))
+                               (attachment-session attachment))
+                              :completion-provider
+                              (get-pinyin-completion-provider))))
           (unless (session-frontend-input-parser frontend)
             (setf (session-frontend-input-parser frontend)
                   (new-input-parser))))

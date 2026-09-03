@@ -127,12 +127,10 @@ The provider receives a prefix string and returns complete strings."
             (when (listp candidates)
               (remove-duplicates
                (remove-if-not
+                ;; Validate candidates without assuming text-prefix matching.
                 (lambda (candidate)
                   (and (stringp candidate)
-                       (plusp (length candidate))
-                       (<= (length prefix) (length candidate))
-                       (string= prefix candidate
-                                :end2 (length prefix))))
+                       (plusp (length candidate))))
                 candidates)
                :test #'string=)))
         (error () nil)))))
