@@ -16,6 +16,10 @@
 ;; Dispatch one command using the named Session operations.
 (defun set-application-operation (command)
   "Apply one NEW, GET, SET, or DEL CLI operation."
+  ;; Read the internal manager-server flag.
+  (let ((manager-option (find-option :long command "manager-server")))
+    (when (and manager-option (option-is-set-p manager-option))
+      (return-from set-application-operation (set-manager-server))))
   (let ((arguments (command-arguments command)))
     (unless arguments
       (error "The CLI requires NEW, GET, SET, or DEL."))
@@ -78,16 +82,19 @@
                 :description "Manage named shell Sessions and Services."
                 :usage "<new|get|set|del> <path> [value]"
                 :version *version*
+                :options
+                (list
+                 (make-option :flag
+                              :key :manager-server
+                              :long-name "manager-server"
+                              :description "Run the manager server."))
                 :handler #'set-application-operation))
 
+;; Run the parsed MTM command.
 (defun main ()
   "Start the MTM command-line application."
   (handler-case
-      (if (member +manager-server-argument+
-                  (uiop:command-line-arguments)
-                  :test #'string=)
-          (set-manager-server)
-          (run (new-application-command)))
+      (run (new-application-command))
     (error (condition)
       (set-unhandled-condition-report condition)
       (uiop:quit 1))))

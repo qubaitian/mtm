@@ -2,7 +2,10 @@
   (:use #:cl)
   (:import-from #:clingon
                 #:command-arguments
+                #:find-option
                 #:make-command
+                #:make-option
+                #:option-is-set-p
                 #:run)
   (:import-from #:mtm
                 #:attachment-session

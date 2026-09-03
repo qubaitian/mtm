@@ -111,6 +111,18 @@
                '("set" "session" "s1" "--unsupported")))))
          "The CLI accepts an unsupported option."))
 
+(deftest application-command-parses-manager-server-flag ()
+  (let* (;; Build the application command.
+         (command (mtm.app::new-application-command))
+         ;; Parse the internal manager flag.
+         (parsed (clingon:parse-command-line
+                  command
+                  '("--manager-server")))
+         ;; Read the parsed manager flag.
+         (option (clingon:find-option :long parsed "manager-server")))
+    (check (clingon:option-is-set-p option)
+           "The CLI does not parse the manager-server flag.")))
+
 (deftest application-rejects-removed-debug-operation ()
   (let ((command (clingon:make-command
                   :name "mtm")))
