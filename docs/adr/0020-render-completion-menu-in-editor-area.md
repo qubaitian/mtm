@@ -9,30 +9,41 @@ accepted
 MTM renders the Completion menu as ANSI output from the Editor area.
 The menu uses candidates supplied by an Editor completion provider.
 The provider receives the current Completion prefix.
-Candidates replace the prefix when the user accepts one.
+MTM queries the provider after typed input or deletion changes the buffer.
+It queries immediately when the Completion prefix has at least one character.
+It does not query after paste, cursor movement, or Submission.
+Candidates replace the prefix only after numeric acceptance.
 
-Tab opens or accepts the Completion menu.
-Up and Down move its selected candidate.
-Enter accepts the selected candidate.
+The menu displays at most nine candidates in provider order.
+Visible candidates use numeric labels from 1 through 9.
+MTM shows the first nine candidates without pagination.
+Number keys accept their corresponding visible candidate.
+Invalid numbers close the menu and insert normally.
+Automatic completion does not insert or expand text.
+
+Tab opens the menu when it is inactive.
+Tab closes the menu and inserts a literal Tab when active.
+Enter closes the menu and follows normal Editor handling.
 Escape closes the menu.
+Up and Down close the menu before normal Editor handling.
+History keeps its Up and Down behavior when the menu is inactive.
 Other input closes the menu before normal Editor handling.
 
-The Browser frontend does not add a separate DOM completion component.
+The Browser frontend does not add a Completion menu.
 Full-screen transport bypasses the Completion menu.
 
 ## Rationale
 
-The Browser terminal sends raw key data through one WebSocket.
-The server-side Editor handles Tab and Completion state.
-The Editor renders menu rows with ANSI control sequences.
-The Browser frontend writes generic output into xterm.js.
-No Completion-specific JSON or DOM path crosses the WebSocket.
-One output path serves local and Browser frontends.
-This keeps Completion behavior consistent across frontends.
+Automatic queries reuse the existing provider and ANSI rendering path.
+Numeric labels avoid ambiguity with Tab and Enter.
+Nine rows provide one-digit selection without pagination.
+The Browser terminal remains an ordinary Shell.
+This keeps Completion behavior inside the existing Editor area.
 
 ## Consequences
 
 Completion shares the existing Editor redraw and terminal geometry.
 The provider stays independent from candidate discovery.
 The menu remains available to local ANSI Terminal frontends.
+Tab, Enter, Up, and Down no longer select candidates.
 Browser-specific rendering does not become a second completion path.

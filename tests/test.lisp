@@ -724,7 +724,7 @@
       (check (= (mtm.editor::get-editor-render-cursor-column render) 2)
              "Chinese text must move the display cursor two cells."))))
 
-(deftest editor-area-completes-and-navigates-candidates ()
+(deftest editor-area-completes-and-selects-number ()
   (let ((editor
           (mtm.editor:new-editor
            :completion-provider
@@ -732,20 +732,15 @@
              (check (string= prefix "f")
                     "Completion provider received the wrong prefix.")
              '("foo" "far")))))
-    (mtm.editor::set-editor-buffer-octets editor (get-utf8 "f"))
-    (check (eq (mtm.editor:set-editor-key editor :tab) :changed)
-           "Tab must open the Completion menu.")
+    (check (eq (mtm.editor:set-editor-byte editor (char-code #\f)) :changed)
+           "Typing a prefix must open the Completion menu.")
     (check (mtm.editor:get-editor-completion-active-p editor)
            "The Completion menu must remain active.")
-    (check (eq (mtm.editor:set-editor-key editor :down) :changed)
-           "Down must move the Completion selection.")
-    (check (= (mtm.editor::get-editor-completion-index editor) 1)
-           "Down must select the second candidate.")
-    (check (eq (mtm.editor:set-editor-key editor :enter) :changed)
-           "Enter must accept the selected candidate.")
+    (check (eq (mtm.editor:set-editor-byte editor (char-code #\2)) :changed)
+           "The second number must accept the second candidate.")
     (check (string= "far"
                     (bytes-to-string (mtm.editor::get-editor-buffer editor)))
-           "Enter must replace the Completion prefix.")
+           "The selected number must replace the Completion prefix.")
     (check (not (mtm.editor:get-editor-completion-active-p editor))
            "Accepting a candidate must close the Completion menu.")))
 
@@ -854,11 +849,14 @@
                     "The provider must accept missing and empty weights.")
              (check (not (member "# hidden" candidates :test #'string=))
                     "The provider must ignore dictionary comments.")
-             (mtm.editor::set-editor-buffer-octets editor (get-utf8 "hel"))
-             (check (eq (mtm.editor:set-editor-key editor :tab) :changed)
-                    "Tab must open the English Completion menu.")
-             (check (eq (mtm.editor:set-editor-key editor :tab) :changed)
-                    "The second Tab must accept the English candidate.")
+             (check (eq (mtm.editor:set-editor-byte editor (char-code #\h))
+                        :changed)
+                    "Typing h must open the English Completion menu.")
+             (mtm.editor:set-editor-byte editor (char-code #\e))
+             (mtm.editor:set-editor-byte editor (char-code #\l))
+             (check (eq (mtm.editor:set-editor-byte editor (char-code #\1))
+                        :changed)
+                    "Number one must accept the English candidate.")
              (check (string= "helpful"
                              (bytes-to-string
                               (mtm.editor::get-editor-buffer editor)))
@@ -887,8 +885,9 @@
                     "Tab must open the Pinyin Completion menu.")
              (check (mtm.editor:get-editor-completion-active-p editor)
                     "The Pinyin Completion menu must remain active.")
-             (check (eq (mtm.editor:set-editor-key editor :tab) :changed)
-                    "The second Tab must accept the Pinyin candidate.")
+             (check (eq (mtm.editor:set-editor-byte editor (char-code #\1))
+                        :changed)
+                    "Number one must accept the Pinyin candidate.")
              (check (string= "好"
                              (nth-value
                               0
@@ -911,38 +910,141 @@
                   "The frontend must attach a default Completion provider.")))
     (del-session-manager)))
 
-(deftest editor-area-completion-closes-before-normal-input ()
+(deftest editor-area-completion-refreshes-after-normal-input ()
   (let ((editor
           (mtm.editor:new-editor
            :completion-provider
            (lambda (prefix)
              (declare (ignore prefix))
              '("foo" "far")))))
-    (mtm.editor::set-editor-buffer-octets editor (get-utf8 "f"))
-    (mtm.editor:set-editor-key editor :tab)
+    (mtm.editor:set-editor-byte editor (char-code #\f))
     (check (eq (mtm.editor:set-editor-byte editor (char-code #\x)) :changed)
-           "Normal input must continue after menu dismissal.")
+           "Normal input must continue after menu refresh.")
     (check (string= "fx"
                     (bytes-to-string (mtm.editor::get-editor-buffer editor)))
            "Normal input must append after menu dismissal.")
-    (check (not (mtm.editor:get-editor-completion-active-p editor))
-           "Normal input must close the Completion menu.")))
+    (check (mtm.editor:get-editor-completion-active-p editor)
+           "Normal input must refresh the Completion menu.")))
 
-(deftest editor-area-completion-extends-common-prefix ()
+(deftest editor-area-completion-keeps-prefix-unchanged ()
   (let ((editor
           (mtm.editor:new-editor
            :completion-provider
            (lambda (prefix)
              (declare (ignore prefix))
              '("foobar" "foobaz")))))
-    (mtm.editor::set-editor-buffer-octets editor (get-utf8 "f"))
-    (check (eq (mtm.editor:set-editor-key editor :tab) :changed)
-           "Tab must extend a shared Completion prefix.")
-    (check (string= "fooba"
+    (check (eq (mtm.editor:set-editor-byte editor (char-code #\f)) :changed)
+           "Typing a prefix must open the Completion menu.")
+    (check (string= "f"
                     (bytes-to-string (mtm.editor::get-editor-buffer editor)))
-           "Tab must insert the longest shared Completion prefix.")
+           "Automatic Completion must not change the Edit buffer.")
     (check (mtm.editor:get-editor-completion-active-p editor)
-           "A shared prefix extension must keep the menu active.")))
+           "Automatic Completion must keep the menu active.")))
+
+(deftest editor-area-completion-refreshes-after-deletion ()
+  (let ((editor
+          (mtm.editor:new-editor
+           :completion-provider
+           (lambda (prefix)
+             (when (string= prefix "f")
+               '("foo" "far"))))))
+    (mtm.editor::set-editor-buffer-octets editor (get-utf8 "fo"))
+    (mtm.editor::set-editor-cursor-left editor)
+    (check (eq (mtm.editor:set-editor-key editor :delete) :changed)
+           "Deleting a character must refresh Completion.")
+    (check (string= "f"
+                    (bytes-to-string (mtm.editor::get-editor-buffer editor)))
+           "Deletion must update the Edit buffer.")
+    (check (mtm.editor:get-editor-completion-active-p editor)
+           "Deletion must reopen the Completion menu.")))
+
+(deftest editor-area-completion-uses-standard-menu-keys ()
+  (let ((provider
+          (lambda (prefix)
+            (declare (ignore prefix))
+            '("foo" "far"))))
+    (let ((editor (mtm.editor:new-editor :completion-provider provider)))
+      (mtm.editor:set-editor-byte editor (char-code #\f))
+      (check (eq (mtm.editor:set-editor-key editor :tab) :changed)
+             "Tab must insert normally while the menu is active.")
+      (check (equalp (mtm.editor::get-editor-buffer editor)
+                     (new-test-octets 102 9))
+             "Tab must insert a literal Tab.")
+      (check (not (mtm.editor:get-editor-completion-active-p editor))
+             "Tab must close the Completion menu."))
+    (let ((editor (mtm.editor:new-editor :completion-provider provider)))
+      (mtm.editor:set-editor-byte editor (char-code #\f))
+      (multiple-value-bind (action data)
+          (mtm.editor:set-editor-key editor :enter)
+        (check (eq action :submit)
+               "Enter must submit instead of accepting a candidate.")
+        (check (equalp data (get-utf8 "f"))
+               "Enter must submit the original prefix.")))))
+
+(deftest editor-area-completion-closes-before-navigation ()
+  (let ((editor
+          (mtm.editor:new-editor
+           :completion-provider
+           (lambda (prefix)
+             (declare (ignore prefix))
+             '("foo" "far")))))
+    (mtm.editor:set-editor-byte editor (char-code #\f))
+    (check (eq (mtm.editor:set-editor-key editor :down) :changed)
+           "Down must close the Completion menu.")
+    (check (not (mtm.editor:get-editor-completion-active-p editor))
+           "Down must not select a Completion candidate.")))
+
+(deftest editor-area-completion-selects-ninth-candidate ()
+  (let ((editor
+          (mtm.editor:new-editor
+           :completion-provider
+           (lambda (prefix)
+             (declare (ignore prefix))
+             '("one" "two" "three" "four" "five"
+               "six" "seven" "eight" "nine" "ten")))))
+    (mtm.editor:set-editor-byte editor (char-code #\f))
+    (check (eq (mtm.editor:set-editor-byte editor (char-code #\9)) :changed)
+           "Number nine must accept the ninth candidate.")
+    (check (string= "nine"
+                    (bytes-to-string (mtm.editor::get-editor-buffer editor)))
+           "Number nine must replace the Completion prefix.")))
+
+(deftest editor-area-completion-inserts-invalid-number ()
+  (let ((editor
+          (mtm.editor:new-editor
+           :completion-provider
+           (lambda (prefix)
+             (declare (ignore prefix))
+             '("foo" "far")))))
+    (mtm.editor:set-editor-byte editor (char-code #\f))
+    (check (eq (mtm.editor:set-editor-byte editor (char-code #\9)) :changed)
+           "An invalid number must continue normal input.")
+    (check (string= "f9"
+                    (bytes-to-string (mtm.editor::get-editor-buffer editor)))
+           "An invalid number must insert its digit.")
+    (check (not (mtm.editor:get-editor-completion-active-p editor))
+           "An invalid number must close the Completion menu.")))
+
+(deftest editor-area-renders-nine-numbered-candidates ()
+  (let ((editor
+          (mtm.editor:new-editor
+           :completion-provider
+           (lambda (prefix)
+             (declare (ignore prefix))
+             '("one" "two" "three" "four" "five"
+               "six" "seven" "eight" "nine" "ten")))))
+    (mtm.editor:set-editor-byte editor (char-code #\f))
+    (let ((output
+            (bytes-to-string
+             (capture-platform-output
+              (lambda ()
+                (mtm.editor:set-editor-render editor 1 40 12 0))))))
+      (check (search "1 one" output)
+             "The first candidate must show number one.")
+      (check (search "9 nine" output)
+             "The ninth candidate must show number nine.")
+      (check (not (search "10 ten" output))
+             "The tenth candidate must stay hidden."))))
 
 (deftest editor-area-renders-completion-menu-as-ansi ()
   (let ((editor
@@ -965,6 +1067,10 @@
              "The ANSI Completion menu must contain the first candidate.")
       (check (search "far" output)
              "The ANSI Completion menu must contain the second candidate.")
+      (check (search "1 foo" output)
+             "The first candidate must show number one.")
+      (check (search "2 far" output)
+             "The second candidate must show number two.")
       (check (search (format nil "~C[7m" #\Escape) output)
              "The ANSI Completion menu must highlight its selection."))))
 

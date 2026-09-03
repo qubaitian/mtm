@@ -90,13 +90,11 @@
   completion-candidates
   ;; Store the selected candidate's absolute index.
   (completion-index 0)
-  ;; Store the first candidate currently shown.
-  (completion-offset 0)
   ;; Store the byte range replaced by the selected candidate.
   (completion-start 0)
   (completion-end 0))
 
-(defconstant +editor-completion-max-visible+ 8)
+(defconstant +editor-completion-max-visible+ 9)
 
 ;; Return true when the Completion menu has candidates to show.
 (defun get-editor-completion-active-p (editor)
@@ -107,7 +105,6 @@
   (when (get-editor-completion-active-p editor)
     (setf (get-editor-completion-candidates editor) nil
           (get-editor-completion-index editor) 0
-          (get-editor-completion-offset editor) 0
           (get-editor-completion-start editor) 0
           (get-editor-completion-end editor) 0)
     :changed))
@@ -167,49 +164,13 @@ The provider receives a prefix string and returns complete strings."
                :test #'string=)))
         (error () nil)))))
 
-;; Return the longest shared character prefix of CANDIDATES.
-(defun get-completion-common-prefix (candidates)
-  (if (null candidates)
-      ""
-      (let* (;; Use the first candidate as the comparison source.
-             (first (first candidates))
-             ;; Start with every character in the first candidate.
-             (limit (length first)))
-        (dolist (candidate (rest candidates))
-          (setf limit
-                (min limit
-                     (or (mismatch first candidate :test #'char=)
-                         (length first)))))
-        (subseq first 0 limit))))
-
 ;; Open the Completion menu for one prefix range.
 (defun set-editor-completion-menu (editor candidates start end)
   (setf (get-editor-completion-candidates editor) candidates
         (get-editor-completion-index editor) 0
-        (get-editor-completion-offset editor) 0
         (get-editor-completion-start editor) start
         (get-editor-completion-end editor) end)
   :changed)
-
-;; Move the selected Completion candidate by DELTA positions.
-(defun set-editor-completion-selection (editor delta)
-  (let* (;; Read all active candidates.
-         (candidates (get-editor-completion-candidates editor))
-         ;; Count candidates for circular movement.
-         (count (length candidates))
-         ;; Wrap the selected index at either list boundary.
-         (index (mod (+ (get-editor-completion-index editor) delta)
-                     count))
-         ;; Keep the selected candidate visible in the menu.
-         (offset (get-editor-completion-offset editor)))
-    (setf (get-editor-completion-index editor) index
-          (get-editor-completion-offset editor)
-          (cond
-            ((< index offset) index)
-            ((>= index (+ offset +editor-completion-max-visible+))
-             (- index (1- +editor-completion-max-visible+)))
-            (t offset)))
-    :changed))
 
 ;; Accept the selected Completion candidate and close the menu.
 (defun set-editor-completion-accept (editor)
@@ -225,35 +186,28 @@ The provider receives a prefix string and returns complete strings."
     (del-editor-completion editor)
     :changed))
 
-;; Apply one key while the Completion menu remains active.
-(defun set-editor-completion-key (editor key)
-  (case key
-    (:up (set-editor-completion-selection editor -1))
-    (:down (set-editor-completion-selection editor 1))
-    ((:enter :tab) (set-editor-completion-accept editor))
-    (:escape (del-editor-completion editor))))
+;; Accept the Completion candidate selected by a one-based number.
+(defun set-editor-completion-number (editor number)
+  (let* (;; Convert the displayed number to a zero-based candidate index.
+         (index (1- number))
+         ;; Read the complete candidate list.
+         (candidates (get-editor-completion-candidates editor)))
+    (when (and (<= 1 number +editor-completion-max-visible+)
+               (< index (length candidates)))
+      (setf (get-editor-completion-index editor) index)
+      (set-editor-completion-accept editor))))
 
-;; Start or continue Completion from the current Insertion point.
+;; Query and open the Completion menu from the current Insertion point.
 (defun set-editor-completion (editor)
-  (if (get-editor-completion-active-p editor)
-      (set-editor-completion-accept editor)
-      (multiple-value-bind (prefix start end)
-          (get-editor-completion-prefix editor)
+  (multiple-value-bind (prefix start end)
+      (get-editor-completion-prefix editor)
+    (if (plusp (length prefix))
         (let (;; Read matching candidates from the configured provider.
               (candidates (get-completion-candidates editor prefix)))
-          (when candidates
-            (if (= (length candidates) 1)
-                (set-editor-buffer-octets
-                 editor (get-utf8 (first candidates)) start end)
-                (let ((common-prefix
-                        (get-completion-common-prefix candidates)))
-                  (if (> (length common-prefix) (length prefix))
-                      (progn
-                        (set-editor-buffer-octets
-                         editor (get-utf8 common-prefix) start end)
-                        (set-editor-completion-menu
-                         editor candidates start (get-editor-cursor editor)))
-                      (set-editor-completion-menu editor candidates start end)))))))))
+          (if candidates
+              (set-editor-completion-menu editor candidates start end)
+              (del-editor-completion editor)))
+        (del-editor-completion editor))))
 
 (defun get-editor-history-entries (editor)
   (car (get-editor-history-box editor)))
@@ -520,6 +474,7 @@ The provider receives a prefix string and returns complete strings."
                (set-editor-history-down editor)))
     (:home (set-editor-cursor-home editor))
     (:end (set-editor-cursor-end editor))
+    (:tab (set-editor-buffer-octets editor (vector 9)))
     (:delete (del-editor-character-forward editor))
     (:copy (let ((text (get-editor-selection-text editor)))
              (when text
@@ -533,19 +488,38 @@ The provider receives a prefix string and returns complete strings."
     (:history-up (set-editor-history-up editor))
     (:history-down (set-editor-history-down editor))))
 
+;; Return true for bytes that can change the Completion prefix.
+(defun get-editor-auto-completion-byte-p (octet)
+  (or (>= octet 32)
+      (= octet 4)
+      (= octet 8)
+      (= octet 127)))
+
+;; Refresh the Completion menu after a changed text edit.
+(defun set-editor-auto-completion (editor action)
+  (when (eq action :changed)
+    (set-editor-completion editor))
+  action)
+
 ;; Map decoded terminal keys to Editor actions and History navigation.
 (defun set-editor-key (editor key)
   (if (get-editor-completion-active-p editor)
-      (if (member key '(:up :down :enter :tab :escape))
-          (set-editor-completion-key editor key)
+      (if (eq key :escape)
+          (del-editor-completion editor)
           (let (;; Remember the redraw caused by menu dismissal.
                 (closed (del-editor-completion editor)))
             (multiple-value-bind (action data)
                 (set-editor-standard-key editor key)
+              (when (eq key :delete)
+                (set-editor-auto-completion editor action))
               (values (or action closed) data))))
       (if (eq key :tab)
           (set-editor-completion editor)
-          (set-editor-standard-key editor key))))
+          (multiple-value-bind (action data)
+              (set-editor-standard-key editor key)
+            (when (eq key :delete)
+              (set-editor-auto-completion editor action))
+            (values action data)))))
 
 ;; Copy submitted bytes because later edits replace the active buffer.
 (defun set-editor-history (editor)
@@ -642,16 +616,30 @@ The provider receives a prefix string and returns complete strings."
          (set-editor-standard-byte editor octet)))
     ((and (= octet 27) (get-editor-completion-active-p editor))
      (set-editor-key editor :escape))
+    ((and (get-editor-completion-active-p editor)
+          (<= 49 octet 57))
+     (or (set-editor-completion-number editor (- octet 48))
+         (let (;; Remember the redraw caused by menu dismissal.
+               (closed (del-editor-completion editor)))
+           (multiple-value-bind (action data)
+               (set-editor-standard-byte editor octet)
+             (values (or action closed) data)))))
     ((get-editor-completion-active-p editor)
      (let (;; Remember the redraw caused by menu dismissal.
            (closed (del-editor-completion editor)))
        (multiple-value-bind (action data)
            (set-editor-standard-byte editor octet)
+         (when (get-editor-auto-completion-byte-p octet)
+           (set-editor-auto-completion editor action))
          (values (or action closed) data))))
     ((= octet 27)
      (values :forward (vector octet)))
     (t
-     (set-editor-standard-byte editor octet))))
+     (multiple-value-bind (action data)
+         (set-editor-standard-byte editor octet)
+       (when (get-editor-auto-completion-byte-p octet)
+         (set-editor-auto-completion editor action))
+       (values action data)))))
 
 ;; Delimiters for terminal bracketed paste mode.
 (defparameter +paste-start+ #(27 91 50 48 48 126))
@@ -1036,16 +1024,14 @@ FLUSH-P resolves one pending standalone Escape key."
 (defun set-editor-completion-display (editor output-fd row column count)
   (let* (;; Read all candidates in provider order.
          (candidates (get-editor-completion-candidates editor))
-         ;; Read the first visible candidate's absolute index.
-         (offset (get-editor-completion-offset editor))
          ;; Stop before the next hidden candidate.
-         (end (min (length candidates) (+ offset count)))
+         (end (min (length candidates) count))
          ;; Read the selected candidate's absolute index.
          (selected (get-editor-completion-index editor))
          ;; Use one-based terminal columns.
          (terminal-column (1+ column)))
-    (loop for candidate in (subseq candidates offset end)
-          for index from offset
+    (loop for candidate in (subseq candidates 0 end)
+          for index from 0
           for menu-row from row
           do (set-terminal-ascii
               output-fd
@@ -1056,6 +1042,9 @@ FLUSH-P resolves one pending standalone Escape key."
                       (code-char 27)
                       (code-char 27)
                       (if (= index selected) 7 2)))
+             (set-terminal-ascii
+              output-fd
+              (format nil "~D " (1+ index)))
              (set-terminal-ascii output-fd candidate)
              (set-terminal-ascii
               output-fd
@@ -1071,12 +1060,10 @@ FLUSH-P resolves one pending standalone Escape key."
          (cursor-absolute-row (+ buffer-start-row cursor-row))
          ;; Read all candidates to calculate remaining menu rows.
          (candidates (get-editor-completion-candidates editor))
-         ;; Read the first candidate currently shown.
-         (offset (get-editor-completion-offset editor))
          ;; Reserve at most the configured number of menu rows.
          (desired-count
            (min +editor-completion-max-visible+
-                (- (length candidates) offset)))
+                (length candidates)))
          ;; Count rows available below the cursor.
          (below-count (max 0 (- height cursor-absolute-row)))
          ;; Count rows available above the cursor.

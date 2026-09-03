@@ -125,7 +125,8 @@ MTM reads direct files in filename order.
 Higher weights rank candidates earlier.
 Equal weights keep file and line order.
 MTM reads valid Han and English entries.
-Type `hao`, press Tab twice, and accept `好`.
+The Completion menu opens automatically while typing a prefix.
+Type `hao`, then press `1` to accept `好`.
 The overlay starts at column 0 and covers the prompt.
 Live PTY output stays raw octets.
 Click and drag in the Editor area to select text.
