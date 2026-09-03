@@ -30,7 +30,16 @@
              (<= #x20000 code-point #x323af)
              (<= #x2f800 code-point #x2fa1f)))))
 
-;; Return a candidate, Pinyin code, and weight from one dictionary line.
+;; Return true when TEXT is an ASCII English Completion candidate.
+(defun get-english-word-p (text)
+  (and (plusp (length text))
+       (not (char= (char text 0) #\#))
+       (some #'alpha-char-p text)
+       (every (lambda (character)
+                (<= (char-code character) 127))
+              text)))
+
+;; Return a candidate, code, and optional weight from one dictionary line.
 (defun get-pinyin-dictionary-entry (line)
   (let (;; Find the candidate and code separator.
         (first-tab (position #\Tab line)))
@@ -48,21 +57,24 @@
                     (string-trim '(#\Space #\Tab #\Return)
                                  (subseq line code-start
                                          (or code-end (length line))))))
-             ;; Read the raw weight field when the line contains one.
-             (weight-text (and weight-start (subseq line weight-start)))
-             ;; Parse the weight without rejecting the entire dictionary.
-             (weight (and weight-text
-                          (ignore-errors
-                            (parse-integer
-                             (string-trim '(#\Space #\Tab #\Return)
-                                          weight-text))))))
-        (when (and (get-hanzi-character-p candidate)
+             ;; Read the optional weight field when the line contains one.
+             (weight-text
+               (and weight-start
+                    (string-trim '(#\Space #\Tab #\Return)
+                                 (subseq line weight-start))))
+             ;; Treat missing or empty weights as zero.
+             (weight (if (or (null weight-text)
+                             (string= weight-text ""))
+                         0
+                         (ignore-errors (parse-integer weight-text)))))
+        (when (and (or (get-hanzi-character-p candidate)
+                       (get-english-word-p candidate))
                    (plusp (length code))
                    (integerp weight)
                    (not (minusp weight)))
           (values candidate code weight))))))
 
-;; Read valid dictionary entries in file and line order.
+;; Read valid Completion dictionary entries in file and line order.
 (defun new-pinyin-dictionary-entries (paths)
   (let (;; Preserve dictionary order for candidate ranking.
         (entries nil))

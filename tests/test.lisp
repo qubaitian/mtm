@@ -782,7 +782,7 @@
                         (format nil "好~Chao~C1" #\Tab #\Tab)
                         (format nil "好~Chao~C3" #\Tab #\Tab)
                         (format nil "啊~Chao~C3" #\Tab #\Tab)
-                        (format nil "坏~Chao" #\Tab)
+                        (format nil "坏~Chao~C-1" #\Tab #\Tab)
                         (format nil "错~Chao~Cbad" #\Tab #\Tab)
                         (format nil "好好~Chao~C99" #\Tab #\Tab))))
       (write-line line stream)))
@@ -831,6 +831,39 @@
              (check (equal '("号" "啊" "好") candidates)
                     "The provider must merge and rank TXT dictionary files.")))
       (del-pinyin-test-directory directory))))
+
+(deftest completion-provider-accepts-unweighted-english ()
+  (let (;; Keep the fixture outside the project tree.
+        (path (new-pinyin-test-path)))
+    (unwind-protect
+         (progn
+           (set-pinyin-test-dictionary
+            path
+            (list (format nil "hello~Chello" #\Tab)
+                  (format nil "help~Chelp~C" #\Tab #\Tab)
+                  (format nil "helpful~Chelpful~C3" #\Tab #\Tab)
+                  (format nil "# hidden~Chidden" #\Tab)))
+           (let* (;; Load the English fixture through the existing provider.
+                  (provider (new-pinyin-completion-provider path))
+                  ;; Read candidates in weight and source order.
+                  (candidates (funcall provider "hel"))
+                  ;; Use the same provider as the Editor area.
+                  (editor
+                    (mtm.editor:new-editor :completion-provider provider)))
+             (check (equal '("helpful" "hello" "help") candidates)
+                    "The provider must accept missing and empty weights.")
+             (check (not (member "# hidden" candidates :test #'string=))
+                    "The provider must ignore dictionary comments.")
+             (mtm.editor::set-editor-buffer-octets editor (get-utf8 "hel"))
+             (check (eq (mtm.editor:set-editor-key editor :tab) :changed)
+                    "Tab must open the English Completion menu.")
+             (check (eq (mtm.editor:set-editor-key editor :tab) :changed)
+                    "The second Tab must accept the English candidate.")
+             (check (string= "helpful"
+                             (bytes-to-string
+                              (mtm.editor::get-editor-buffer editor)))
+                    "The English candidate must replace the prefix.")))
+      (del-pinyin-test-dictionary path))))
 
 (deftest editor-area-completes-pinyin-character ()
   (let (;; Keep the fixture outside the project tree.

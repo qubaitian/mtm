@@ -6,7 +6,9 @@ accepted
 
 MTM reads every direct `.txt` file in the user's dictionaries directory.
 It sorts files by filename and preserves each file's line order.
-Each row has a Han character, Pinyin code, and non-negative weight.
+Each row has a Han character or ASCII English candidate.
+Each row has a matching code and optional non-negative weight.
+Missing or empty weights use zero.
 Matching candidates sort by descending weight.
 Equal weights preserve source order.
 Duplicate candidates keep their highest matching weight.
