@@ -30,10 +30,6 @@ The public Service snapshot exposes desired and observed states.
 The observed states are `:running`, `:stopped`, and `:failed`.
 The snapshot includes the current child process identifier.
 
-The status bar shows Session rows and Service rows.
-Selecting a Service opens recent output without input.
-Existing Session rows keep their interactive behavior.
-
 ## Consequences
 
 Service definitions can run several independent programs.
@@ -43,5 +39,8 @@ Recent output disappears when the manager restarts.
 The PTY layer now supports arbitrary argument vectors.
 The manager still uses one in-memory lifecycle owner.
 
-ADR-0013 still governs Session status-bar behavior.
-Service rows add read-only behavior beside those rows.
+## Conflicts
+
+The status-bar clauses are superseded.
+The current frontend renders no status bar.
+The Service lifecycle and snapshot decisions remain accepted.

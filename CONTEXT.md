@@ -76,11 +76,6 @@ Recent output emitted by a Service.
 It can be viewed without sending input to the Service.
 _Avoid_: Session output, log file
 
-**Service row**:
-A status bar row for one Service.
-Selecting it shows recent Service output without interactive input.
-_Avoid_: Session row, service status line
-
 ## Display
 
 **Terminal frontend**:
@@ -170,7 +165,7 @@ _Avoid_: mouse command
 
 **Mouse tracking**:
 A terminal mode that requests Mouse reports from the Terminal frontend.
-It applies while the local status bar is active.
+It applies while the local Terminal frontend runs.
 _Avoid_: mouse capture
 
 ## Data operations
