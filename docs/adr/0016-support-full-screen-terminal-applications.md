@@ -16,9 +16,7 @@ All attached frontends receive the matching transport state.
 Full-screen input sends keyboard bytes directly to the PTY.
 Exit restores the Editor area for every Attachment.
 
-The Session manager status bar stays visible during full-screen transport.
-It reserves rows below the application display.
-The full-screen frontend updates the Session PTY size.
+The full-screen frontend uses the complete Terminal frontend dimensions.
 Closing a frontend detaches its Attachment.
 The Session continues running after detachment.
 

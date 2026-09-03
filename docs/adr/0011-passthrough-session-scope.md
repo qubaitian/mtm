@@ -17,15 +17,11 @@ It forwards live PTY output without rewriting.
 The manager keeps a Terminal emulator projection for reattachment.
 Reattachment receives that projection before new PTY bytes.
 
-The Session manager status bar shows named Sessions locally.
-The bar stays outside the Session's retained display.
-It reserves terminal rows when full-screen transport runs.
-
 Natural shell exit removes the Session immediately.
 Named deletion terminates its shell and Attachments.
 Detachment leaves a running Session available.
 Normal Sessions keep their configured dimensions.
-Full-screen transport may reduce PTY height for the status bar.
+Full-screen transport uses the attached Terminal frontend's dimensions.
 
 The CLI and Lisp API use named Session operations.
 Session creation ensures the manager when needed.

@@ -109,15 +109,6 @@ Repeating the command reuses the existing Session.
 `get session s1` enters an existing Session.
 Both commands require a Session name.
 
-The Session manager status bar stays visible during Terminal use.
-The bar shows the number of running Sessions.
-The bar also shows registered Services.
-Click the bar to expand or collapse Session rows.
-Click a Session row to enter that Session.
-Click a Service row to view recent output.
-Service views accept no input.
-Press `Esc` to collapse expanded rows.
-
 The Editor area intercepts keys before Submission.
 Enter at the buffer end submits the Edit buffer.
 Unescaped newlines become one space on Submission.
@@ -140,7 +131,7 @@ MTM detects the terminal's alternate-screen entry.
 It then sends keyboard bytes directly to the PTY.
 MTM detects alternate-screen exit and restores the Editor area.
 No extra command or option is needed.
-The status bar remains visible and reserves terminal rows.
+The full-screen application uses the complete Terminal frontend height.
 The Session keeps running after frontend detachment.
 
 Delete a named Session or stop the manager.

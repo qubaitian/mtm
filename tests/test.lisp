@@ -189,7 +189,7 @@
          (del-attachment owner))
     (del-session-manager)))
 
-(deftest full-screen-status-bar-reserves-pty-rows ()
+(deftest full-screen-uses-frontend-height ()
   (new-session-manager)
   (unwind-protect
        (let* ((session (new-session-value "sized-full-screen" :shell "/bin/sh"))
@@ -204,16 +204,14 @@
          (mtm.session::set-session-pty-output
           session
           (get-utf8 (format nil "~C[?1049h" #\Escape)))
-         (setf (mtm.frontend::session-frontend-expanded-p frontend) t
-               (mtm.frontend::session-frontend-drawn-session-count frontend) 2)
          (mtm.frontend::set-full-screen-size frontend)
          (multiple-value-bind (rows columns)
              (mtm.platform:get-terminal-size
               (pty-master
                (mtm.session::managed-shell-session
                 session)))
-           (check (and (= rows 7) (= columns 80))
-                  "The full-screen status bar does not reserve PTY rows.")))
+           (check (and (= rows 10) (= columns 80))
+                  "The full-screen PTY does not use frontend height.")))
     (del-session-manager)))
 
 (deftest terminal-reports-its-size ()
@@ -225,7 +223,7 @@
                   "The terminal reports the wrong size."))
       (del-shell-session session))))
 
-(deftest status-bar-parses-sgr-left-click ()
+(deftest frontend-parses-sgr-left-click ()
   (let ((bytes (get-utf8 (format nil "~C[<0;7;9M" #\Escape))))
     (multiple-value-bind (kind end button column row press-p)
         (mtm.frontend::get-sgr-mouse-report bytes 0)
@@ -237,7 +235,7 @@
                   press-p)
              "The frontend does not parse an SGR left click."))))
 
-(deftest status-bar-parses-legacy-left-click ()
+(deftest frontend-parses-legacy-left-click ()
   (let ((bytes (new-test-octets 27 91 77 32 39 41)))
     (multiple-value-bind (kind end button column row press-p)
         (mtm.frontend::get-legacy-mouse-report bytes 0)
@@ -249,7 +247,7 @@
                   press-p)
              "The frontend does not parse a legacy left click."))))
 
-(deftest status-bar-parses-legacy-release ()
+(deftest frontend-parses-legacy-release ()
   (let ((bytes (new-test-octets 27 91 77 35 39 41)))
     (multiple-value-bind (kind end button column row press-p)
         (mtm.frontend::get-legacy-mouse-report bytes 0)
@@ -261,7 +259,7 @@
                   (not press-p))
              "The frontend does not parse a legacy release."))))
 
-(deftest status-bar-parses-sgr-extra-fields ()
+(deftest frontend-parses-sgr-extra-fields ()
   (let ((bytes (get-utf8 (format nil "~C[<0;7;9;0M" #\Escape))))
     (multiple-value-bind (kind end button column row press-p)
         (mtm.frontend::get-sgr-mouse-report bytes 0)
@@ -272,82 +270,6 @@
                   (= row 9)
                   press-p)
              "The frontend rejects an extended SGR mouse report."))))
-
-(deftest status-bar-renders-session-rows ()
-  (let ((collapsed
-          (mtm.frontend::get-session-manager-status-bar
-           '(("alpha" . :running) ("beta" . :running))
-           "alpha"
-           6
-           32
-           nil))
-        (expanded
-          (mtm.frontend::get-session-manager-status-bar
-           '(("alpha" . :running) ("beta" . :running))
-           "alpha"
-           6
-           32
-           t)))
-    (check (and (search "session-manager: 2 sessions" collapsed)
-                (not (search "alpha" collapsed)))
-           "The collapsed status bar has the wrong content.")
-    (check (and (search "session-manager: 2 sessions" expanded)
-                (search "alpha" expanded)
-                (search "beta" expanded))
-           "The expanded status bar loses Session rows.")))
-
-(deftest status-bar-clicks-toggle-and-enter-sessions ()
-  (let ((frontend
-          (mtm.frontend::new-session-frontend
-           :name "alpha"
-           :rows 6
-           :columns 32
-           :sessions '(("alpha" . :running)
-                       ("beta" . :running)))))
-    (check (mtm.frontend::set-status-bar-mouse-event frontend 0 1 6 t)
-           "The Session manager row does not expand.")
-    (check (mtm.frontend::session-frontend-expanded-p frontend)
-           "The status bar does not expand.")
-    (mtm.frontend::set-status-bar-mouse-event frontend 0 1 6 nil)
-    (check (mtm.frontend::set-status-bar-mouse-event frontend 0 1 4 t)
-           "A Session row does not enter its Session.")
-    (check (string= "beta"
-                    (mtm.frontend::session-frontend-requested-name frontend))
-           "The Session row does not request its Session.")))
-
-(deftest status-bar-parses-split-mouse-report ()
-  (let* ((frontend
-           (mtm.frontend::new-session-frontend
-            :name "alpha"
-            :rows 6
-            :columns 32
-            :sessions '(("alpha" . :running))))
-         (bytes (get-utf8 (format nil "~C[<0;1;6M" #\Escape))))
-    (mtm.frontend::set-session-frontend-input
-     frontend
-     (subseq bytes 0 1))
-    (mtm.frontend::set-session-frontend-input
-     frontend
-     (subseq bytes 1))
-    (check (mtm.frontend::session-frontend-expanded-p frontend)
-           "The frontend loses a split mouse report.")))
-
-(deftest status-bar-parses-split-legacy-mouse-report ()
-  (let* ((frontend
-           (mtm.frontend::new-session-frontend
-            :name "alpha"
-            :rows 6
-            :columns 32
-            :sessions '(("alpha" . :running))))
-         (bytes (new-test-octets 27 91 77 32 33 38)))
-    (mtm.frontend::set-session-frontend-input
-     frontend
-     (subseq bytes 0 4))
-    (mtm.frontend::set-session-frontend-input
-     frontend
-     (subseq bytes 4))
-    (check (mtm.frontend::session-frontend-expanded-p frontend)
-           "The frontend loses a split legacy mouse report.")))
 
 (deftest frontend-strips-split-full-screen-mode-control ()
   (let* ((frontend
@@ -424,12 +346,12 @@
            bytes)
       (setf (symbol-function 'mtm.platform:set-fd) original))))
 
-(deftest status-bar-enables-compatible-mouse-tracking ()
+(deftest frontend-enables-compatible-mouse-tracking ()
   (let ((frontend (mtm.frontend::new-session-frontend :output-fd 1)))
     (check (equalp
             (capture-platform-output
              (lambda ()
-               (mtm.frontend::set-status-bar-mouse frontend)))
+               (mtm.frontend::set-terminal-mouse frontend)))
             (get-utf8
              (format nil "~C[?1000h~C[?1002h~C[?1006h"
                      #\Escape #\Escape #\Escape)))
@@ -437,13 +359,13 @@
     (check (equalp
             (capture-platform-output
              (lambda ()
-               (mtm.frontend::del-status-bar-mouse frontend)))
+               (mtm.frontend::del-terminal-mouse frontend)))
             (get-utf8
              (format nil "~C[?1006l~C[?1002l~C[?1000l"
                      #\Escape #\Escape #\Escape)))
            "The frontend disables compatible mouse tracking.")))
 
-(deftest editor-area-stays-above-status-bar ()
+(deftest editor-area-uses-full-frontend-height ()
   (let* ((terminal (new-terminal-emulator :width 4 :height 4))
          (session
            (make-instance
@@ -465,9 +387,6 @@
              :start-screen terminal
              :max-buffer-bytes 1))))
     (set-terminal-input terminal (format nil "~C[3;1H" #\Escape))
-    (set-terminal-input
-     terminal
-     (mtm.frontend::get-session-manager-status-bar nil nil 4 4 nil))
     (setf (mtm.frontend::session-frontend-editor frontend)
           (mtm.editor:new-editor)
           (mtm.frontend::session-frontend-input-parser frontend)
@@ -481,10 +400,12 @@
              (mtm.frontend::set-session-frontend-input
               frontend
               (new-test-octets 97 97 97 97 97))))))
-    (let ((status-row (fourth (get-terminal-screen-lines terminal))))
-      (check (string= " ses" status-row)
-             "The Editor area writes ~S into the status bar."
-             status-row))))
+    (check (= 4 (mtm.frontend::get-editor-viewport-height frontend))
+           "The Editor area does not use full frontend height.")
+    (check (screen-has-text-p terminal "aaaa")
+           "The Editor area does not render across the full height.")
+    (check (not (screen-has-text-p terminal "session-manager"))
+           "The Editor area renders removed Session manager UI.")))
 
 (deftest editor-area-submits-and-preserves-spaces ()
   (let ((editor (mtm.editor:new-editor)))
@@ -761,8 +682,7 @@
      frontend
      (get-utf8
       (format nil "~C[<0;1;1M~C[<32;6;1M~C[<0;6;1m"
-              #\Escape #\Escape #\Escape))
-     :status-bar-p nil)
+              #\Escape #\Escape #\Escape)))
     (check (string= "hello"
                     (mtm.editor:get-editor-selection-text editor))
            "The frontend must consume Editor area mouse reports.")))

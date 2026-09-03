@@ -12,7 +12,6 @@
                 #:get-session
                 #:get-attachment-output
                 #:get-attachment-start-screen
-                #:get-session-list
                 #:get-session-manager
                 #:get-session-size
                 #:get-service
@@ -36,12 +35,7 @@
                 #:new-session-manager
                 #:session-full-screen-p)
   (:import-from #:mtm.frontend
-                #:set-socket-frontend
-                #:set-frontend-full-screen-mode
-                #:session-frontend-name
-                #:session-frontend-return-session-name
-                #:session-frontend-service-log-p
-                #:session-frontend-socket-fd)
+                #:set-socket-frontend)
   (:import-from #:mtm.platform
                 #:get-fd
                 #:set-close-on-exec

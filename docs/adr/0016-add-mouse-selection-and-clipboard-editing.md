@@ -15,7 +15,6 @@ Command-X cuts, Command-C copies, and Delete removes the Text selection.
 Command-V replaces the Text selection or inserts at the Insertion point.
 The frontend recognizes Command events from the Kitty keyboard protocol.
 Drag positions outside the visible Editor area clamp to its nearest edge.
-The status bar keeps priority over Editor area mouse input.
 
 ## Consequences
 

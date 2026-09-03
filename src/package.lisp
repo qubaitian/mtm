@@ -214,11 +214,6 @@
                 #:get-attachment-start-screen
                 #:get-shell
                 #:get-retained-screen
-                #:get-session-value
-                #:get-session-list
-                #:get-session-size
-                #:get-service-list
-                #:get-service-output
                 #:new-attachment
                 #:new-session-value
                 #:session-full-screen-p
@@ -248,10 +243,6 @@
    #:get-session
    #:new-session
    #:set-socket-frontend
-   #:session-frontend-name
-   #:session-frontend-socket-fd
-   #:session-frontend-return-session-name
-   #:session-frontend-service-log-p
    #:set-passthrough-frontend))
 
 (defpackage #:mtm

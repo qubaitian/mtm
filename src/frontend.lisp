@@ -1,8 +1,7 @@
 (in-package #:mtm.frontend)
 
 (defconstant +frontend-poll-timeout+ 100)
-(defconstant +status-refresh-interval+ 1)
-(defconstant +status-input-delay+ 0.05)
+(defconstant +frontend-input-delay+ 0.05)
 (defconstant +mtm-control-max-bytes+ 128)
 
 (defparameter +mtm-control-prefix+
@@ -16,52 +15,48 @@
                       socket-fd
                       input-fd
                       output-fd
-                      sessions
-                      services
                       (full-screen-p nil)
                       (socket-control-p nil)
                       (rows 24)
                       (columns 80)
                       (input-buffer
                        (make-array 0 :element-type '(unsigned-byte 8))))))
+  ;; Store the current Session name.
   name
+  ;; Store the managed Attachment.
   attachment
+  ;; Store the manager socket descriptor.
   socket-fd
+  ;; Store the local input descriptor.
   input-fd
+  ;; Store the local output descriptor.
   output-fd
-  ;; Store named shell Session rows.
-  sessions
-  ;; Store named Service rows.
-  services
   ;; Track automatic full-screen terminal input.
   (full-screen-p nil)
+  ;; Track whether manager controls use the socket.
   (socket-control-p nil)
-  expanded-p
+  ;; Store the current Terminal frontend row count.
   (rows 24 :type integer)
+  ;; Store the current Terminal frontend column count.
   (columns 80 :type integer)
-  (next-refresh 0)
-  ;; Count all rows drawn below the manager row.
-  (drawn-session-count 0)
+  ;; Store bytes waiting for local input parsing.
   input-buffer
+  ;; Store bytes waiting for an MTM control terminator.
   (control-buffer
    (make-array 0 :element-type '(unsigned-byte 8)))
+  ;; Store when the pending MTM control first arrived.
   (control-since nil)
   ;; Cache the last full-screen PTY size.
   (last-full-screen-rows 0)
   ;; Cache the last full-screen PTY width.
   (last-full-screen-columns 0)
+  ;; Store when a standalone Escape first arrived.
   (pending-input-since nil)
-  (mouse-captured-p nil)
-  ;; Queue the next named shell Session.
-  requested-name
-  ;; Queue the next named Service log.
-  requested-service
-  ;; Mark the current view as read-only Service output.
-  (service-log-p nil)
-  ;; Remember the Session to restore from a Service log.
-  return-session-name
+  ;; Store the local Editor area.
   editor
+  ;; Store the local Editor input parser.
   input-parser
+  ;; Store the current Editor area render.
   editor-render)
 
 (defun event-readable-p (events fd)
@@ -156,13 +151,14 @@
                (return))))))
     (values result activity-p))))
 
+;; Forward a delayed MTM control from FRONTEND.
 (defun set-pending-mtm-control-output (frontend ordinary-function)
   "Forward an incomplete MTM control after a short delay."
   (let ((since (session-frontend-control-since frontend)))
     (when (and since
                (>= (/ (- (get-internal-real-time) since)
                       internal-time-units-per-second)
-                   +status-input-delay+))
+                   +frontend-input-delay+))
       (let ((bytes (session-frontend-control-buffer frontend)))
         (setf (session-frontend-control-buffer frontend)
               (make-array 0 :element-type '(unsigned-byte 8))
@@ -194,9 +190,7 @@
 ;; Synchronize FRONTEND with its Session's display state.
 (defun set-frontend-mode-from-session (frontend)
   "Synchronize FRONTEND's mode with its attached Session."
-  (let ((attachment
-          (unless (session-frontend-service-log-p frontend)
-            (session-frontend-attachment frontend))))
+  (let ((attachment (session-frontend-attachment frontend)))
     (when attachment
       (let ((full-screen-p
               (session-full-screen-p (attachment-session attachment))))
@@ -210,18 +204,12 @@
                      (if full-screen-p "full-screen" "editor"))))))))
   frontend)
 
-(defun get-status-bar-row-count (frontend)
-  "Return the number of rows reserved by FRONTEND's status bar."
-  (1+ (if (session-frontend-expanded-p frontend)
-          (session-frontend-drawn-session-count frontend)
-          0)))
-
-;; Reserve status rows when FRONTEND uses full-screen transport.
+;; Set the full-screen PTY to FRONTEND's complete terminal size.
 (defun set-full-screen-size (frontend)
-  "Keep the PTY below FRONTEND's reserved status bar rows."
+  "Set FRONTEND's full-screen PTY to its complete terminal size."
   (when (session-frontend-full-screen-p frontend)
-    (let ((rows (max 1 (- (session-frontend-rows frontend)
-                          (get-status-bar-row-count frontend))))
+    ;; Use the complete Terminal frontend dimensions.
+    (let ((rows (max 1 (session-frontend-rows frontend)))
           (columns (session-frontend-columns frontend)))
       (unless (and (= rows (session-frontend-last-full-screen-rows frontend))
                    (= columns
@@ -239,87 +227,10 @@
               (session-frontend-last-full-screen-columns frontend) columns))))
   frontend)
 
-(defun get-status-row-text (text columns)
-  "Fit TEXT to one terminal row of COLUMNS cells."
-  (let* ((text (princ-to-string text))
-         (width (max 1 columns)))
-    (format nil "~vA" width
-            (if (> (length text) width)
-                (subseq text 0 width)
-                text))))
-
-(defun get-green-status-row (row columns text &key bright-p)
-  "Return ANSI output for one green status row."
-  (format nil "~C[~D;1H~C[30;~Am~A~C[0m"
-          #\Escape
-          row
-          #\Escape
-          (if bright-p 102 42)
-          (get-status-row-text text columns)
-          #\Escape))
-
-;; Return display entries for named Sessions and Services.
-(defun get-status-bar-entries (sessions services)
-  "Return display entries for named Sessions and Services."
-  (append
-   (mapcar (lambda (entry)
-             (list :session (car entry) (cdr entry)))
-           sessions)
-   (mapcar (lambda (entry)
-             (list :service (car entry) (cdr entry)))
-           services)))
-
-;; Render the Session manager status bar.
-(defun get-session-manager-status-bar
-    (sessions active-name rows columns expanded-p
-     &optional (previous-session-count 0) (services nil))
-  "Return ANSI output for the Session manager status bar."
-  (let* ((entries (get-status-bar-entries sessions services))
-         (visible-entry-count
-           (min (max 0 (1- rows)) (length entries))))
-    (with-output-to-string (output)
-      (format output "~C[s" #\Escape)
-      ;; Clear rows left by a shorter list.
-      (when expanded-p
-        (loop for index from (1+ visible-entry-count)
-                to (min previous-session-count (max 0 (1- rows)))
-              do (format output "~C[~D;1H~C[2K"
-                         #\Escape (- rows index) #\Escape)))
-      (write-string
-       (get-green-status-row
-        rows
-        columns
-        (if services
-            (format nil " session-manager: ~D sessions, ~D services "
-                    (length sessions)
-                    (length services))
-            (format nil " session-manager: ~D sessions " (length sessions))))
-       output)
-      (when expanded-p
-        (loop for entry in entries
-              for index from 1
-              while (< index rows)
-              for row = (- rows index)
-              do (write-string
-                  (get-green-status-row
-                   row
-                   columns
-                   (if (eq (first entry) :service)
-                       (format nil " service ~A [~A] "
-                               (second entry)
-                               (string-downcase
-                                (princ-to-string (third entry))))
-                       (format nil " ~A [~A] "
-                               (second entry)
-                               (string-downcase
-                                (princ-to-string (third entry)))))
-                   :bright-p (and active-name
-                                  (string= active-name (second entry))))
-                  output)))
-      (format output "~C[u" #\Escape))))
-
-(defun set-status-bar-size (frontend)
+;; Refresh FRONTEND's terminal dimensions from its output TTY.
+(defun set-frontend-size (frontend)
   "Refresh FRONTEND's terminal dimensions when its output is a TTY."
+  ;; Read dimensions from the local output descriptor.
   (let ((output-fd (session-frontend-output-fd frontend)))
     (when output-fd
       (handler-case
@@ -329,43 +240,6 @@
               (setf (session-frontend-rows frontend) rows
                     (session-frontend-columns frontend) columns)))
         (error () nil))))
-  frontend)
-
-;; Draw the status bar and update the full-screen PTY size.
-(defun set-session-manager-status-bar (frontend)
-  "Draw FRONTEND's local Session manager status bar."
-  (let ((output-fd (session-frontend-output-fd frontend)))
-    (when output-fd
-      (set-status-bar-size frontend)
-      (set-fd
-       output-fd
-       (get-utf8
-        (get-session-manager-status-bar
-         (session-frontend-sessions frontend)
-         (session-frontend-name frontend)
-         (session-frontend-rows frontend)
-         (session-frontend-columns frontend)
-         (session-frontend-expanded-p frontend)
-         (session-frontend-drawn-session-count frontend)
-         (session-frontend-services frontend))))
-      (setf (session-frontend-drawn-session-count frontend)
-            (if (session-frontend-expanded-p frontend)
-                (min (max 0 (1- (session-frontend-rows frontend)))
-                     (+ (length (session-frontend-sessions frontend))
-                        (length (session-frontend-services frontend))))
-                0))
-      (set-full-screen-size frontend))))
-
-;; Store Session and Service rows and schedule their next refresh.
-(defun set-status-bar-sessions (frontend list-entries)
-  "Store Session and Service rows and schedule their next refresh."
-  ;; Read current Session and Service rows.
-  (multiple-value-bind (sessions services)
-      (funcall list-entries)
-    (setf (session-frontend-sessions frontend) sessions
-          (session-frontend-services frontend) services
-          (session-frontend-next-refresh frontend)
-          (+ (get-universal-time) +status-refresh-interval+)))
   frontend)
 
 (defun set-frontend-control (frontend text)
@@ -386,109 +260,21 @@
    frontend
    (format nil "~C[?2004l" #\Escape)))
 
-(defun set-status-bar-mouse (frontend)
-  ;; Enable compatible terminal mouse reports for FRONTEND.
-  "Enable compatible mouse reports for the local frontend."
+;; Enable SGR mouse reports for Editor area selection.
+(defun set-terminal-mouse (frontend)
+  "Enable SGR mouse reports for FRONTEND."
   (set-frontend-control
    frontend
    (format nil "~C[?1000h~C[?1002h~C[?1006h"
            #\Escape #\Escape #\Escape)))
 
-(defun del-status-bar-mouse (frontend)
-  ;; Disable compatible terminal mouse reports after FRONTEND stops.
-  "Disable compatible mouse reports after the frontend stops."
+;; Disable SGR mouse reports after FRONTEND stops.
+(defun del-terminal-mouse (frontend)
+  "Disable SGR mouse reports for FRONTEND."
   (set-frontend-control
    frontend
    (format nil "~C[?1006l~C[?1002l~C[?1000l"
            #\Escape #\Escape #\Escape)))
-
-(defun del-session-manager-status-bar (frontend)
-  "Clear FRONTEND's drawn status rows before frontend shutdown."
-  (let ((rows (session-frontend-rows frontend))
-        (count (session-frontend-drawn-session-count frontend)))
-    (when (session-frontend-output-fd frontend)
-      (set-frontend-control
-       frontend
-       (with-output-to-string (output)
-         (format output "~C[s" #\Escape)
-         (loop for index from 0 to count
-               do (format output "~C[~D;1H~C[2K"
-                          #\Escape (- rows index) #\Escape))
-         (format output "~C[u" #\Escape))))
-    (setf (session-frontend-drawn-session-count frontend) 0)))
-
-;; Return one expanded status entry under ROW, or NIL.
-(defun get-status-bar-entry-at-row (frontend row)
-  "Return one expanded status entry under ROW, or NIL."
-  (let* ((rows (session-frontend-rows frontend))
-         (entries
-           (get-status-bar-entries
-            (session-frontend-sessions frontend)
-            (session-frontend-services frontend)))
-         (index (- rows row 1)))
-    (when (and (session-frontend-expanded-p frontend)
-               (< 0 row rows)
-               (<= 0 index)
-               (< index (length entries)))
-      (nth index entries))))
-
-;; Queue NAME as FRONTEND's next Session.
-(defun set-frontend-requested-session (frontend name)
-  "Queue NAME as FRONTEND's next Session."
-  (when name
-    (setf (session-frontend-requested-name frontend) name)))
-
-;; Queue NAME as FRONTEND's next Service log.
-(defun set-frontend-requested-service (frontend name)
-  "Queue NAME as FRONTEND's next Service log."
-  (when name
-    (setf (session-frontend-requested-service frontend) name)))
-
-;; Return the Session name used when leaving a Service log.
-(defun get-frontend-return-session-name (frontend)
-  "Return the Session name used when leaving a Service log."
-  (or (session-frontend-return-session-name frontend)
-      (unless (session-frontend-service-log-p frontend)
-        (session-frontend-name frontend))))
-
-;; Handle one mouse report for the status bar.
-(defun set-status-bar-mouse-event
-    (frontend button column row press-p)
-  "Handle one mouse report and return true when it belongs to the bar."
-  (declare (ignore column))
-  (let* ((manager-row (session-frontend-rows frontend))
-         ;; Read the status entry under the pointer.
-         (entry (get-status-bar-entry-at-row frontend row)))
-    (cond
-      ((not (and (= (logand button 3) 0)
-                 (zerop (logand button 32))))
-       nil)
-      ((not press-p)
-       (when (session-frontend-mouse-captured-p frontend)
-         (setf (session-frontend-mouse-captured-p frontend) nil)
-         t))
-      ((= row manager-row)
-       (setf (session-frontend-mouse-captured-p frontend) t)
-       (if (session-frontend-expanded-p frontend)
-           (set-frontend-requested-session
-            frontend
-            (get-frontend-return-session-name frontend))
-           (progn
-             (setf (session-frontend-expanded-p frontend) t
-                   (session-frontend-next-refresh frontend) 0)
-             (set-session-manager-status-bar frontend)
-             t)))
-      ((and (session-frontend-expanded-p frontend)
-            (eq (first entry) :session))
-       (setf (session-frontend-mouse-captured-p frontend) t)
-       (set-frontend-requested-session frontend (second entry))
-       t)
-      ((and (session-frontend-expanded-p frontend)
-            (eq (first entry) :service))
-       (setf (session-frontend-mouse-captured-p frontend) t)
-       (set-frontend-requested-service frontend (second entry))
-       t)
-      (t nil))))
 
 (defun get-decimal-mouse-field (bytes start end)
   "Parse one decimal field from BYTES."
@@ -606,12 +392,10 @@
   (setf (session-frontend-editor frontend) nil
         (session-frontend-input-parser frontend) nil))
 
+;; Return the complete Editor area height for FRONTEND.
 (defun get-editor-viewport-height (frontend)
-  "Return overlay rows that leave the status bar visible."
-  (max 1
-       (- (session-frontend-rows frontend)
-          1
-          (session-frontend-drawn-session-count frontend))))
+  "Return all rows available to FRONTEND's Editor area."
+  (max 1 (session-frontend-rows frontend)))
 
 ;; Read the retained terminal cursor row for FRONTEND.
 (defun get-frontend-terminal-cursor-row (frontend)
@@ -645,7 +429,7 @@
       (if (editor-empty-p editor)
           (del-frontend-editor-render frontend)
           (progn
-            (set-status-bar-size frontend)
+            (set-frontend-size frontend)
             (del-frontend-editor-render frontend)
             (setf (session-frontend-editor-render frontend)
                   (set-editor-render
@@ -740,13 +524,11 @@
     (session-frontend-input-parser frontend)
     bytes)))
 
-;; Send input BYTES through full-screen transport or the Editor area.
 ;; Send input BYTES through the current frontend mode.
 (defun set-frontend-chunk (frontend bytes)
   "Send BYTES to full-screen transport or the Editor area."
   (cond
     ((or (null bytes) (zerop (length bytes))) nil)
-    ((session-frontend-service-log-p frontend) nil)
     ((session-frontend-full-screen-p frontend)
      (set-session-bytes frontend bytes)
      nil)
@@ -789,13 +571,14 @@
      (set-frontend-full-screen-mode frontend nil))
     (t nil)))
 
-;; Route local input, including complete mouse reports, to its destination.
-(defun set-session-frontend-input (frontend bytes &key (status-bar-p t))
-  "Route input to local controls, the Editor area, or the Session."
+;; Route local input to the Editor area or Session.
+(defun set-session-frontend-input (frontend bytes)
+  "Consume Editor input, then forward Session input."
   (let* (;; Combine bytes split across frontend reads.
-         (buffer (concatenate '(vector (unsigned-byte 8))
-                              (session-frontend-input-buffer frontend)
-                              bytes))
+         (buffer
+           (concatenate '(vector (unsigned-byte 8))
+                        (session-frontend-input-buffer frontend)
+                        bytes))
          ;; Cache the combined input length for the scan.
          (length (length buffer))
          ;; Track the next byte that still needs classification.
@@ -833,11 +616,8 @@
                                   frontend
                                   (subseq buffer offset end))
                              (setf detach-p t))
-                           (unless (or (and status-bar-p
-                                            (set-status-bar-mouse-event
-                                             frontend button column row press-p))
-                                       (set-editor-mouse-event
-                                        frontend button column row press-p))
+                           (unless (set-editor-mouse-event
+                                    frontend button column row press-p)
                              (when (set-frontend-chunk
                                     frontend
                                     (subseq buffer offset end))
@@ -857,17 +637,6 @@
                                 (= (+ offset 2) length))))
                   (set-frontend-input-range offset)
                   (return))
-                 ((and (not (session-frontend-full-screen-p frontend))
-                       (session-frontend-expanded-p frontend)
-                       (= (aref buffer offset) 27)
-                       (or (= (1+ offset) length)
-                           (/= (aref buffer (1+ offset)) 91)))
-                  (set-frontend-input-range offset)
-                  (set-frontend-requested-session
-                   frontend
-                   (get-frontend-return-session-name frontend))
-                  (incf offset)
-                  (setf forward-start offset))
                  (t
                   (incf offset))))
       (set-frontend-input-range offset)
@@ -887,70 +656,15 @@
     (when (and since
                (>= (/ (- (get-internal-real-time) since)
                       internal-time-units-per-second)
-                   +status-input-delay+))
+                   +frontend-input-delay+))
       (setf (session-frontend-input-buffer frontend)
             (make-array 0 :element-type '(unsigned-byte 8))
             (session-frontend-pending-input-since frontend) nil)
-      (if (and (not (session-frontend-full-screen-p frontend))
-               (or (session-frontend-expanded-p frontend)
-                   (and (session-frontend-service-log-p frontend)
-                        (get-frontend-return-session-name frontend))))
-          (set-frontend-requested-session
-           frontend
-           (get-frontend-return-session-name frontend))
-          (set-frontend-chunk
-           frontend
-           (make-array 1
-                       :element-type '(unsigned-byte 8)
-                       :initial-element 27))))))
-
-;; Enter FRONTEND's queued Session name, if any.
-(defun set-requested-session (frontend list-entries enter-session)
-  "Enter FRONTEND's queued Session name, if any."
-  (let ((name (session-frontend-requested-name frontend)))
-    (when name
-      (setf (session-frontend-requested-name frontend) nil)
-      (handler-case
-          (progn
-            (funcall enter-session frontend name)
-            (setf (session-frontend-expanded-p frontend) nil
-                  (session-frontend-drawn-session-count frontend) 0
-                  (session-frontend-requested-service frontend) nil
-                  (session-frontend-service-log-p frontend) nil
-                  (session-frontend-return-session-name frontend) nil
-                  (session-frontend-control-buffer frontend)
-                  (make-array 0 :element-type '(unsigned-byte 8))
-                  (session-frontend-control-since frontend) nil)
-            (set-frontend-mode-from-session frontend)
-            (set-frontend-editor frontend))
-        (error () nil))
-      (set-status-bar-sessions
+      (set-frontend-chunk
        frontend
-       list-entries)
-      (set-session-manager-status-bar frontend))))
-
-;; Enter FRONTEND's queued Service log, if any.
-(defun set-requested-service (frontend list-entries enter-service)
-  "Enter FRONTEND's queued Service log, if any."
-  (let ((name (session-frontend-requested-service frontend)))
-    (when name
-      (setf (session-frontend-requested-service frontend) nil)
-      (handler-case
-          (progn
-            (funcall enter-service frontend name)
-            (setf (session-frontend-expanded-p frontend) nil
-                  (session-frontend-drawn-session-count frontend) 0
-                  (session-frontend-requested-name frontend) nil
-                  (session-frontend-control-buffer frontend)
-                  (make-array 0 :element-type '(unsigned-byte 8))
-                  (session-frontend-control-since frontend) nil)
-            (set-frontend-full-screen-mode frontend nil)
-            (del-frontend-editor frontend))
-        (error () nil))
-      (set-status-bar-sessions
-       frontend
-       list-entries)
-      (set-session-manager-status-bar frontend))))
+       (make-array 1
+                   :element-type '(unsigned-byte 8)
+                   :initial-element 27)))))
 
 (defun get-frontend-events (frontend)
   "Poll FRONTEND's input and socket descriptors."
@@ -972,12 +686,6 @@
   "Forward one available socket chunk and return its end state."
   (multiple-value-bind (bytes eof-p)
       (get-fd (session-frontend-socket-fd frontend) :wait-p nil)
-    (when (session-frontend-service-log-p frontend)
-      (when (and bytes
-                 (plusp (length bytes))
-                 (session-frontend-output-fd frontend))
-        (set-fd (session-frontend-output-fd frontend) bytes))
-      (return-from set-socket-output (values eof-p (plusp (length bytes)))))
     (multiple-value-bind (result activity-p)
         (if (and bytes (plusp (length bytes)))
             (set-mtm-controls
@@ -999,22 +707,21 @@
         (declare (ignore ignored))
         (values eof-p (or activity-p flushed-p))))))
 
-;; Run the interactive status bar frontend loop.
-(defun set-status-bar-loop
-    (frontend list-entries enter-session enter-service)
+;; Run the interactive Terminal frontend loop.
+(defun set-terminal-loop (frontend)
   "Run FRONTEND until its Session source or input ends."
   (loop
-    (unless (session-frontend-service-log-p frontend)
-      (set-frontend-mode-from-session frontend))
-    (when (and (session-frontend-attachment frontend)
-               (not (session-frontend-service-log-p frontend)))
+    (set-frontend-size frontend)
+    (set-frontend-mode-from-session frontend)
+    (set-full-screen-size frontend)
+    (when (session-frontend-attachment frontend)
       (multiple-value-bind (eof-p output-p)
           (set-passthrough-output
            (session-frontend-attachment frontend)
            (session-frontend-output-fd frontend))
         (when output-p
           (set-frontend-mode-from-session frontend)
-          (set-session-manager-status-bar frontend)
+          (set-full-screen-size frontend)
           (set-frontend-editor-render frontend))
         (when eof-p
           (return))))
@@ -1026,7 +733,7 @@
         (multiple-value-bind (eof-p output-p)
             (set-socket-output frontend)
           (when output-p
-            (set-session-manager-status-bar frontend)
+            (set-full-screen-size frontend)
             (set-frontend-editor-render frontend))
           (when eof-p
             (return))))
@@ -1041,42 +748,27 @@
               (when (and bytes (plusp (length bytes)))
                 (when (set-session-frontend-input frontend bytes)
                   (return))))))
-      (set-pending-frontend-escape frontend)
-      (set-requested-service
-       frontend
-       list-entries
-       enter-service)
-      (set-requested-session frontend list-entries enter-session)
-      (when (>= (get-universal-time)
-                (session-frontend-next-refresh frontend))
-        (set-status-bar-sessions frontend list-entries)
-        (set-session-manager-status-bar frontend)))))
+      (set-pending-frontend-escape frontend))))
 
-;; Run FRONTEND's status bar around its Session source.
-(defun set-status-bar-frontend
-    (frontend list-entries enter-session enter-service)
-  "Run FRONTEND's status bar around its Session source."
+;; Run a TTY Terminal frontend around its Session source.
+(defun set-terminal-frontend (frontend)
+  "Run FRONTEND around its Session source."
   (set-raw-input
    (session-frontend-input-fd frontend)
    (lambda ()
      (unwind-protect
           (progn
-            (set-frontend-mode-from-session frontend)
             (set-frontend-editor frontend)
-            (set-status-bar-sessions frontend list-entries)
-            (set-status-bar-mouse frontend)
+            (set-terminal-mouse frontend)
             (set-bracketed-paste frontend)
-            (set-session-manager-status-bar frontend)
-            (set-status-bar-loop
-             frontend list-entries enter-session enter-service))
+            (set-terminal-loop frontend))
        (del-frontend-editor-render frontend)
-       (del-session-manager-status-bar frontend)
        (del-bracketed-paste frontend)
-       (del-status-bar-mouse frontend)))))
+       (del-terminal-mouse frontend)))))
 
-;; Forward a non-TTY manager socket without a status bar.
+;; Forward a non-TTY manager socket without local Terminal behavior.
 (defun set-socket-passthrough (frontend)
-  "Forward a manager socket without a status bar."
+  "Forward a manager socket without a local Terminal frontend."
   (set-raw-input
    (session-frontend-input-fd frontend)
    (lambda ()
@@ -1092,29 +784,23 @@
            (when (event-readable-p events socket-fd)
              (multiple-value-bind (bytes eof-p)
                  (get-fd socket-fd :wait-p nil)
-               (if (session-frontend-service-log-p frontend)
-                   (when (and bytes (plusp (length bytes)) output-fd)
-                     (set-fd output-fd bytes))
-                   (when (and bytes (plusp (length bytes)))
-                     (set-mtm-controls
-                      frontend
-                      bytes
-                      (lambda (ordinary)
-                        (when output-fd
-                          (set-fd output-fd ordinary)))
-                      (lambda (payload)
-                        (set-session-mode-control frontend payload)))))
+               (when (and bytes (plusp (length bytes)))
+                 (set-mtm-controls
+                  frontend
+                  bytes
+                  (lambda (ordinary)
+                    (when output-fd
+                      (set-fd output-fd ordinary)))
+                  (lambda (payload)
+                    (set-session-mode-control frontend payload))))
                 (when eof-p
                  (return))))
-           (when (and input-fd
-                      (event-readable-p events input-fd))
+           (when (and input-fd (event-readable-p events input-fd))
              (multiple-value-bind (bytes eof-p)
                  (get-fd input-fd :wait-p nil)
                (if eof-p
                    (return)
-                   (when (and (not (session-frontend-service-log-p frontend))
-                              bytes
-                              (plusp (length bytes)))
+                   (when (and bytes (plusp (length bytes)))
                      (set-session-bytes frontend bytes)))))
            (set-pending-mtm-control-output
             frontend
@@ -1123,9 +809,9 @@
                 (set-fd output-fd ordinary))))))))))
 
 ;; Run a local frontend around a manager socket.
-(defun set-socket-frontend
-    (socket-fd name list-entries enter-session enter-service
-     &key (input-fd 0) (output-fd 1) (full-screen-p nil))
+(defun set-socket-frontend (socket-fd name
+                            &key (input-fd 0) (output-fd 1)
+                              (full-screen-p nil))
   "Run a local frontend for a manager socket."
   (let ((frontend
           (new-session-frontend
@@ -1138,8 +824,7 @@
              output-fd
              (tty-p input-fd)
              (tty-p output-fd))
-        (set-status-bar-frontend
-         frontend list-entries enter-session enter-service)
+        (set-terminal-frontend frontend)
         (set-socket-passthrough frontend))))
 
 (defun set-terminal-output (terminal output-fd)
@@ -1198,8 +883,7 @@
                        frontend
                        bytes
                        (lambda (ordinary)
-                         (set-session-frontend-input
-                          frontend ordinary :status-bar-p nil))
+                         (set-session-frontend-input frontend ordinary))
                        (lambda (payload)
                          (set-frontend-control-event frontend payload)))
                     (declare (ignore ignored))
@@ -1209,57 +893,10 @@
               (set-pending-mtm-control-output
                frontend
                (lambda (ordinary)
-                 (set-session-frontend-input
-                  frontend ordinary :status-bar-p nil)))
+                 (set-session-frontend-input frontend ordinary)))
             (declare (ignore ignored))
             (when result
               (return)))))))
-
-;; Enter NAME through an existing local frontend.
-(defun set-attachment-session (frontend name)
-  "Replace FRONTEND's Attachment with NAME."
-  (let ((old (session-frontend-attachment frontend)))
-    (when (and old
-               (string= name
-                        (session-name
-                         (attachment-session old))))
-      (set-terminal-output
-       (get-attachment-start-screen old)
-       (session-frontend-output-fd frontend))
-      (setf (session-frontend-name frontend) name)
-      (return-from set-attachment-session old))
-    (let ((new (new-attachment name)))
-      (del-frontend-editor frontend)
-      (set-active-attachment new)
-      (setf (session-frontend-attachment frontend) new
-            (session-frontend-name frontend) name)
-      (set-frontend-full-screen-mode
-       frontend
-       (session-full-screen-p (attachment-session new)))
-      (ignore-errors (del-attachment old))
-      (set-terminal-output
-       (get-attachment-start-screen new)
-       (session-frontend-output-fd frontend)))))
-
-;; Show recent output for NAME while keeping the current Session attached.
-(defun set-attachment-service (frontend name)
-  "Show recent output for NAME while keeping the current Session attached."
-  (let ((attachment (session-frontend-attachment frontend)))
-    (setf (session-frontend-service-log-p frontend) t
-          (session-frontend-return-session-name frontend)
-          (and attachment
-               (session-name (attachment-session attachment)))
-          (session-frontend-name frontend) name)
-    (del-frontend-editor frontend)
-    (set-frontend-full-screen-mode frontend nil)
-    (set-frontend-control
-     frontend
-     (format nil "~C[2J~C[H" #\Escape #\Escape))
-    (let ((output (get-service-output name)))
-      (when (and output
-                 (plusp (length output))
-                 (session-frontend-output-fd frontend))
-        (set-fd (session-frontend-output-fd frontend) output)))))
 
 ;; Run a frontend for one managed Attachment.
 (defun set-passthrough-frontend (&key
@@ -1290,18 +927,13 @@
             (get-attachment-start-screen attachment)
             output-fd)
            (if tty-frontend-p
-               (set-status-bar-frontend
-                frontend
-                (lambda ()
-                  (values (get-session-list) (get-service-list)))
-                #'set-attachment-session
-                #'set-attachment-service)
+               (set-terminal-frontend frontend)
                (set-raw-input
                 input-fd
                 (lambda ()
                   (set-attachment-loop frontend)))))
       (del-frontend-editor-render frontend)
-      ;; Close the active Attachment after a status bar Session change.
+      ;; Close the active Attachment after frontend shutdown.
       (ignore-errors
         (del-attachment (session-frontend-attachment frontend)))))
   nil)

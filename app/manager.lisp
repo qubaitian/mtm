@@ -533,20 +533,6 @@
                            (cdr service)))))
           (del-manager-socket socket)))))
 
-;; Read named Session and Service rows for the status bar.
-(defun get-cli-session-manager-lists ()
-  "Return named Session and Service lists from the Manager."
-  (let* ((socket (get-manager-connection))
-         (fd (get-manager-socket-fd socket)))
-    (unwind-protect
-         (progn
-           (set-protocol-line fd "GET SESSION-MANAGER")
-           (multiple-value-bind (state sessions services)
-               (get-cli-session-manager-values socket)
-             (declare (ignore state))
-             (values sessions services)))
-      (del-manager-socket socket))))
-
 ;; Open a named Session through the manager.
 (defun get-cli-session (name)
   "Enter NAME and return its manager connection."
@@ -713,47 +699,11 @@
 (defun set-client-frontend
     (socket name &key (full-screen-p nil))
   "Run the local frontend around manager SOCKET."
-  (let ((active-socket socket)
-        (fd (get-manager-socket-fd socket)))
+  (let ((fd (get-manager-socket-fd socket)))
     (set-socket-sigpipe fd)
-    (flet ((set-cli-session (frontend new-name)
-             (unless (and (not (session-frontend-service-log-p frontend))
-                          (string= new-name (session-frontend-name frontend)))
-               (multiple-value-bind (new-socket new-full-screen-p)
-                   (get-cli-session new-name)
-                 (let ((new-fd (get-manager-socket-fd new-socket)))
-                   (set-socket-sigpipe new-fd)
-                   (del-manager-socket active-socket)
-                   (setf active-socket new-socket
-                         (session-frontend-socket-fd frontend) new-fd
-                         (session-frontend-name frontend) new-name
-                         (session-frontend-service-log-p frontend) nil
-                         (session-frontend-return-session-name frontend) nil)
-                   (set-frontend-full-screen-mode frontend new-full-screen-p)))))
-           (set-cli-service-view (frontend new-name)
-             (unless (and (session-frontend-service-log-p frontend)
-                          (string= new-name (session-frontend-name frontend)))
-               (let* ((return-name
-                        (or (session-frontend-return-session-name frontend)
-                            (unless (session-frontend-service-log-p frontend)
-                              (session-frontend-name frontend))))
-                      (new-socket (get-cli-service-log new-name))
-                      (new-fd (get-manager-socket-fd new-socket)))
-                 (set-socket-sigpipe new-fd)
-                 (del-manager-socket active-socket)
-                 (setf active-socket new-socket
-                       (session-frontend-socket-fd frontend) new-fd
-                       (session-frontend-name frontend) new-name
-                       (session-frontend-service-log-p frontend) t
-                       (session-frontend-return-session-name frontend)
-                       return-name)
-                 (set-frontend-full-screen-mode frontend nil)))))
-      (unwind-protect
-           (set-socket-frontend
-            fd
-            name
-            #'get-cli-session-manager-lists
-            #'set-cli-session
-            #'set-cli-service-view
-            :full-screen-p full-screen-p)
-        (del-manager-socket active-socket)))))
+    (unwind-protect
+         (set-socket-frontend
+          fd
+          name
+          :full-screen-p full-screen-p)
+      (del-manager-socket socket))))

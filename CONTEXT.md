@@ -142,7 +142,7 @@ _Avoid_: terminal buffer
 **Terminal size**:
 The PTY width and height measured in character cells.
 Normal Sessions use their configured dimensions.
-Full-screen transport may reduce height for the status bar.
+Full-screen transport uses the attached Terminal frontend's dimensions.
 _Avoid_: pixel size
 
 ## Transport
@@ -210,16 +210,6 @@ A singleton value position for the Session manager.
 Creating a Session ensures the manager when needed.
 _Avoid_: service position
 
-**Session manager status bar**:
-A local display control at the bottom of one Terminal frontend.
-It shows Sessions and Services with states and opens their rows.
-_Avoid_: status line, session menu
-
-**Session row**:
-A green display row for one running Session in an expanded status bar.
-Clicking it enters that Session.
-_Avoid_: session status bar
-
 ## Editor
 
 **Editor area**:
@@ -266,7 +256,7 @@ _Avoid_: command history, input history, edit history
 
 **Viewport**:
 The text range now visible in the Editor area.
-It excludes status bar rows.
+It uses the complete Terminal frontend height.
 _Avoid_: visible area, scrolling window
 
 **Pasted content**:

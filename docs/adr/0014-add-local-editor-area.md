@@ -14,8 +14,7 @@ History remains available across Attachments.
 The Editor area handles ordinary Shell input.
 Empty Ctrl-D detaches the Attachment.
 The overlay starts at column zero.
-The status bar handles mouse input and Escape first.
-The Viewport excludes status bar rows.
+The Editor area handles local mouse input across its full Viewport.
 
 Full-screen terminal applications use automatic full-screen transport.
 The terminal emulator detects alternate-screen entry.
