@@ -896,6 +896,26 @@
                     "The Pinyin candidate must replace hao.")))
       (del-pinyin-test-dictionary path))))
 
+;; Verify that Korean and Japanese single-character entries remain valid.
+(deftest pinyin-provider-accepts-korean-and-japanese-characters ()
+  (let (;; Keep the fixture outside the project tree.
+        (path (new-pinyin-test-path)))
+    (unwind-protect
+         (progn
+           (set-pinyin-test-dictionary
+            path
+            (list (format nil "한~Chan~C0" #\Tab #\Tab)
+                  (format nil "あ~Ca~C0" #\Tab #\Tab)
+                  (format nil "カ~Cka~C0" #\Tab #\Tab)))
+           (let (;; Load the fixture with the dictionary provider.
+                 (provider (new-pinyin-completion-provider path)))
+             (check (equal '(("한") ("あ") ("カ"))
+                           (list (funcall provider "han")
+                                 (funcall provider "a")
+                                 (funcall provider "ka")))
+                    "The provider must accept Korean and Japanese characters.")))
+      (del-pinyin-test-dictionary path))))
+
 (deftest frontend-creates-editor-with-pinyin-provider ()
   (new-session-manager)
   (unwind-protect

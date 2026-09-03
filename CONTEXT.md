@@ -280,22 +280,30 @@ _Avoid_: query text, search term
 A function that maps a Completion prefix to ordered Completion candidates.
 _Avoid_: completion source, suggestion provider
 
-**Pinyin code**:
-The Latin spelling used to identify a Chinese character.
-_Avoid_: pronunciation, romanization
+**Romanization code**:
+The Latin spelling used to identify one Completion candidate.
+_Avoid_: pronunciation
 
-**Pinyin dictionary**:
-A mapping from Pinyin codes to single-character Completion candidates.
+**Completion dictionary**:
+A mapping from Romanization codes to Completion candidates.
 _Avoid_: word dictionary, input method
 
 **English dictionary**:
 A mapping from English codes to ASCII Completion candidates.
 _Avoid_: spelling dictionary
 
-**Pinyin candidate weight**:
-A non-negative score attached to a single-character Completion candidate.
-Higher scores rank candidates earlier for matching Pinyin codes.
+**Completion candidate weight**:
+A non-negative score attached to one Completion candidate.
+Higher scores rank candidates earlier for matching codes.
 _Avoid_: priority, probability
+
+**Pinyin code**:
+A Chinese Romanization code for one Han character.
+_Avoid_: pronunciation
+
+**Pinyin dictionary**:
+A Completion dictionary that uses Chinese characters and Pinyin codes.
+_Avoid_: word dictionary, input method
 
 **User dictionary**:
 The Completion dictionary selected and maintained by the user.

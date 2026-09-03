@@ -1,16 +1,16 @@
 (in-package #:mtm.completion)
 
-;; Store the relative directory for user Pinyin dictionary files.
+;; Store the relative directory for user romanization dictionary files.
 (defparameter +pinyin-dictionary-relative-directory+
   ".mtm/dictionaries/")
 
-;; Return the user's Pinyin dictionary directory.
+;; Return the user's romanization dictionary directory.
 (defun get-pinyin-dictionary-directory ()
   (merge-pathnames
    +pinyin-dictionary-relative-directory+
    (user-homedir-pathname)))
 
-;; Return direct user dictionary files in deterministic filename order.
+;; Return direct romanization dictionary files in deterministic filename order.
 (defun get-pinyin-dictionary-files
     (&optional (directory (get-pinyin-dictionary-directory)))
   (sort
@@ -19,16 +19,9 @@
    #'string<
    :key #'namestring))
 
-;; Return true when TEXT contains one Han character.
-(defun get-hanzi-character-p (text)
-  (and (= (length text) 1)
-       (let (;; Read the only character's Unicode code point.
-             (code-point (char-code (char text 0))))
-         (or (<= #x3400 code-point #x4dbf)
-             (<= #x4e00 code-point #x9fff)
-             (<= #xf900 code-point #xfaff)
-             (<= #x20000 code-point #x323af)
-             (<= #x2f800 code-point #x2fa1f)))))
+;; Return true when TEXT contains one Unicode Completion character.
+(defun get-completion-character-p (text)
+  (= (length text) 1))
 
 ;; Return true when TEXT is an ASCII English Completion candidate.
 (defun get-english-word-p (text)
@@ -46,11 +39,11 @@
     (when first-tab
       (let* (;; Read the candidate before its first tab.
              (candidate (subseq line 0 first-tab))
-             ;; Start reading the Pinyin code after the candidate.
+             ;; Start reading the completion code after the candidate.
              (code-start (1+ first-tab))
-             ;; Find the separator before the required weight column.
+             ;; Find the separator before the optional weight column.
              (code-end (position #\Tab line :start code-start))
-             ;; Start reading the weight after the Pinyin code.
+             ;; Start reading the weight after the completion code.
              (weight-start (and code-end (1+ code-end)))
              ;; Normalize the code for case-insensitive matching.
              (code (string-downcase
@@ -67,7 +60,7 @@
                              (string= weight-text ""))
                          0
                          (ignore-errors (parse-integer weight-text)))))
-        (when (and (or (get-hanzi-character-p candidate)
+        (when (and (or (get-completion-character-p candidate)
                        (get-english-word-p candidate))
                    (plusp (length code))
                    (integerp weight)
@@ -101,7 +94,7 @@
        (<= (length prefix) (length code))
        (string= prefix code :end2 (length prefix))))
 
-;; Return dictionary candidates matching a Pinyin prefix.
+;; Return dictionary candidates matching a romanization prefix.
 (defun get-pinyin-completion-candidates (entries prefix)
   (let* (;; Normalize user input before dictionary matching.
          (normalized-prefix (string-downcase prefix))
