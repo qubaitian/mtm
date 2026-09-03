@@ -288,6 +288,11 @@ _Avoid_: pronunciation, romanization
 A mapping from Pinyin codes to single-character Completion candidates.
 _Avoid_: word dictionary, input method
 
+**Pinyin candidate weight**:
+A non-negative score attached to a single-character Completion candidate.
+Higher scores rank candidates earlier for matching Pinyin codes.
+_Avoid_: priority, probability
+
 **User dictionary**:
 The Pinyin dictionary selected and maintained by the user.
 _Avoid_: bundled dictionary, system dictionary

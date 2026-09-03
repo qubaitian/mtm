@@ -752,13 +752,22 @@
 ;; Return a unique temporary path for a Pinyin dictionary test.
 (defun new-pinyin-test-path ()
   (merge-pathnames
-   (format nil "mtm-pinyin-~D-~D.dict.yaml"
+   (format nil "mtm-pinyin-~D-~D.txt"
            (get-universal-time)
            (random 1000000))
    (uiop:temporary-directory)))
 
-;; Write a small Rime dictionary for one provider test.
-(defun set-pinyin-test-dictionary (path)
+;; Return a unique temporary directory for merged Pinyin dictionary tests.
+(defun new-pinyin-test-directory ()
+  (merge-pathnames
+   (format nil "mtm-pinyin-~D-~D/"
+           (get-universal-time)
+           (random 1000000))
+   (uiop:temporary-directory)))
+
+;; Write weighted Pinyin dictionary lines for one provider test.
+(defun set-pinyin-test-dictionary (path &optional lines)
+  (ensure-directories-exist path)
   (with-open-file
       ;; Write the fixture as UTF-8 text.
       (stream path
@@ -767,11 +776,15 @@
               :if-does-not-exist :create
               :external-format :utf-8)
     (dolist
-        ;; Include valid, duplicate, and multi-character entries.
-        (line (list (format nil "好~Chao~C3" #\Tab #\Tab)
-                    (format nil "号~Chao~C2" #\Tab #\Tab)
-                    (format nil "好~Chao~C1" #\Tab #\Tab)
-                    (format nil "好好~Chao~C99" #\Tab #\Tab)))
+        ;; Include weighted, invalid, duplicate, and multi-character entries.
+        (line (or lines
+                  (list (format nil "号~Chao~C2" #\Tab #\Tab)
+                        (format nil "好~Chao~C1" #\Tab #\Tab)
+                        (format nil "好~Chao~C3" #\Tab #\Tab)
+                        (format nil "啊~Chao~C3" #\Tab #\Tab)
+                        (format nil "坏~Chao" #\Tab)
+                        (format nil "错~Chao~Cbad" #\Tab #\Tab)
+                        (format nil "好好~Chao~C99" #\Tab #\Tab))))
       (write-line line stream)))
   path)
 
@@ -779,12 +792,45 @@
 (defun del-pinyin-test-dictionary (path)
   (ignore-errors (delete-file path)))
 
+;; Remove a temporary directory and its Pinyin dictionary files.
+(defun del-pinyin-test-directory (path)
+  (ignore-errors (uiop:delete-directory-tree path :validate t)))
+
 (deftest pinyin-provider-does-not-use-fallback ()
   (let (;; Use a missing path to verify fallback behavior.
         (provider
           (new-pinyin-completion-provider (new-pinyin-test-path))))
     (check (null (funcall provider "hao"))
            "The provider must not use a bundled fallback.")))
+
+(deftest pinyin-provider-merges-txt-files ()
+  (let* ((directory (new-pinyin-test-directory))
+         (first-path (merge-pathnames "a.txt" directory))
+         (second-path (merge-pathnames "b.txt" directory)))
+    (unwind-protect
+         (progn
+           (set-pinyin-test-dictionary
+            first-path
+            (list (format nil "号~Chao~C5" #\Tab #\Tab)
+                  (format nil "啊~Chao~C7" #\Tab #\Tab)))
+           (set-pinyin-test-dictionary
+            second-path
+            (list (format nil "好~Chao~C7" #\Tab #\Tab)
+                  (format nil "号~Chao~C9" #\Tab #\Tab)))
+           (let* (;; Read every direct TXT file in filename order.
+                  (paths
+                    (mtm.completion::get-pinyin-dictionary-files directory))
+                  ;; Read entries in the sorted file order.
+                  (entries
+                    (mtm.completion::new-pinyin-dictionary-entries paths))
+                  ;; Rank merged candidates by descending weight.
+                  (candidates
+                    (mtm.completion::get-pinyin-completion-candidates
+                     entries
+                     "hao")))
+             (check (equal '("号" "啊" "好") candidates)
+                    "The provider must merge and rank TXT dictionary files.")))
+      (del-pinyin-test-directory directory))))
 
 (deftest editor-area-completes-pinyin-character ()
   (let (;; Keep the fixture outside the project tree.
@@ -794,15 +840,13 @@
            (set-pinyin-test-dictionary path)
            (let* (;; Load only the test dictionary.
                   (provider (new-pinyin-completion-provider path))
-                  ;; Read candidates in dictionary order.
+                  ;; Read candidates in descending weight order.
                   (candidates (funcall provider "hao"))
                   ;; Use the same provider as the Editor area.
                   (editor
                     (mtm.editor:new-editor :completion-provider provider)))
-             (check (string= "好" (first candidates))
-                    "The user provider must rank 好 first for hao.")
-             (check (member "号" candidates :test #'string=)
-                    "The user provider must include 号 for hao.")
+             (check (equal '("好" "啊" "号") candidates)
+                    "The user provider must rank weighted candidates.")
              (check (not (member "好好" candidates :test #'string=))
                     "The provider must reject multi-character entries.")
              (mtm.editor::set-editor-buffer-octets editor (get-utf8 "hao"))

@@ -2,7 +2,7 @@
 
 ## Status
 
-accepted
+superseded by ADR-0023
 
 MTM must avoid committing a large Completion dictionary.
 MTM reads only the user 8105 dictionary at `~/.mtm/dictionaries/8105.dict.yaml`.
