@@ -335,20 +335,20 @@
               :initial-contents values))
 
 (deftest utf8-encodes-unicode-text ()
-  (check (equalp (get-utf8 "中𐀀")
-                 (new-test-octets #xe4 #xb8 #xad #xf0 #x90 #x80 #x80))
+  (check (equalp (get-utf8 "★𐀀")
+                 (new-test-octets #xe2 #x98 #x85 #xf0 #x90 #x80 #x80))
          "Babel must encode Unicode text as UTF-8."))
 
 (deftest utf8-preserves-split-character ()
   (multiple-value-bind (text pending)
-      (get-utf8-chunk (new-test-octets #xe4))
+      (get-utf8-chunk (new-test-octets #xe2))
     (check (string= text "")
            "UTF-8 decoding must buffer incomplete characters.")
-    (check (equalp pending (new-test-octets #xe4))
+    (check (equalp pending (new-test-octets #xe2))
            "UTF-8 decoding must return incomplete trailing bytes.")
     (multiple-value-bind (text remaining)
-        (get-utf8-chunk (new-test-octets #xb8 #xad) pending)
-      (check (string= text "中")
+        (get-utf8-chunk (new-test-octets #x98 #x85) pending)
+      (check (string= text "★")
              "UTF-8 decoding must join split character bytes.")
       (check (null remaining)
              "UTF-8 decoding must clear completed trailing bytes."))))
@@ -801,20 +801,20 @@
       (check (search ">> " output)
              "The Editor render does not contain the Prompt line."))))
 
-;; Check that a Chinese character uses two terminal cells.
-(deftest editor-area-renders-chinese-cursor-at-two-cells ()
+;; Check that a wide Unicode character uses two terminal cells.
+(deftest editor-area-renders-wide-unicode-cursor-at-two-cells ()
   (let ((editor (mtm.editor:new-editor)))
     (mtm.editor::set-editor-buffer-octets
      editor
-     (get-utf8 (string (code-char 20013))))
+     (get-utf8 (string (code-char #x3000))))
     (mtm.editor:set-editor-key editor :home)
     (mtm.editor:set-editor-key editor :right)
     ;; Render the moved cursor without terminal output.
     (let ((render (mtm.editor:set-editor-render editor nil 80 24 0)))
       (check (= (mtm.editor::get-editor-cursor editor) 3)
-             "Chinese movement must keep the UTF-8 byte boundary.")
+             "Wide Unicode movement must keep the UTF-8 byte boundary.")
       (check (= (mtm.editor::get-editor-render-cursor-column render) 2)
-             "Chinese text must move the display cursor two cells."))))
+             "Wide Unicode text must move the display cursor two cells."))))
 
 (deftest editor-area-completes-and-selects-number ()
   (let ((editor
@@ -836,24 +836,24 @@
     (check (not (mtm.editor:get-editor-completion-active-p editor))
            "Accepting a candidate must close the Completion menu.")))
 
-;; Return a unique temporary path for a Pinyin dictionary test.
-(defun new-pinyin-test-path ()
+;; Return a unique temporary path for a Completion dictionary test.
+(defun new-completion-test-path ()
   (merge-pathnames
-   (format nil "mtm-pinyin-~D-~D.txt"
+   (format nil "mtm-completion-~D-~D.txt"
            (get-universal-time)
            (random 1000000))
    (uiop:temporary-directory)))
 
-;; Return a unique temporary directory for merged Pinyin dictionary tests.
-(defun new-pinyin-test-directory ()
+;; Return a unique temporary directory for merged Completion dictionaries.
+(defun new-completion-test-directory ()
   (merge-pathnames
-   (format nil "mtm-pinyin-~D-~D/"
+   (format nil "mtm-completion-~D-~D/"
            (get-universal-time)
            (random 1000000))
    (uiop:temporary-directory)))
 
-;; Write weighted Pinyin dictionary lines for one provider test.
-(defun set-pinyin-test-dictionary (path &optional lines)
+;; Write weighted Completion dictionary lines for one provider test.
+(defun set-completion-test-dictionary (path &optional lines)
   (ensure-directories-exist path)
   (with-open-file
       ;; Write the fixture as UTF-8 text.
@@ -863,152 +863,151 @@
               :if-does-not-exist :create
               :external-format :utf-8)
     (dolist
-        ;; Include weighted, invalid, duplicate, and multi-character entries.
+        ;; Include weighted, invalid, and duplicate entries.
         (line (or lines
-                  (list (format nil "号~Chao~C2" #\Tab #\Tab)
-                        (format nil "好~Chao~C1" #\Tab #\Tab)
-                        (format nil "好~Chao~C3" #\Tab #\Tab)
-                        (format nil "啊~Chao~C3" #\Tab #\Tab)
-                        (format nil "坏~Chao~C-1" #\Tab #\Tab)
-                        (format nil "错~Chao~Cbad" #\Tab #\Tab)
-                        (format nil "好好~Chao~C99" #\Tab #\Tab))))
+                  (list (format nil "★~Ccode~C2" #\Tab #\Tab)
+                        (format nil "☀~Ccode~C1" #\Tab #\Tab)
+                        (format nil "★~Ccode~C3" #\Tab #\Tab)
+                        (format nil "☂~Ccode~C3" #\Tab #\Tab)
+                        (format nil "bad~Ccode~C-1" #\Tab #\Tab)
+                        (format nil "invalid~Ccode~Cbad" #\Tab #\Tab))))
       (write-line line stream)))
   path)
 
-;; Remove a temporary Pinyin dictionary after one test.
-(defun del-pinyin-test-dictionary (path)
+;; Remove a temporary Completion dictionary after one test.
+(defun del-completion-test-dictionary (path)
   (ignore-errors (delete-file path)))
 
-;; Remove a temporary directory and its Pinyin dictionary files.
-(defun del-pinyin-test-directory (path)
+;; Remove a temporary directory and its Completion dictionary files.
+(defun del-completion-test-directory (path)
   (ignore-errors (uiop:delete-directory-tree path :validate t)))
 
-(deftest pinyin-provider-does-not-use-fallback ()
+(deftest completion-provider-does-not-use-fallback ()
   (let (;; Use a missing path to verify fallback behavior.
         (provider
-          (new-pinyin-completion-provider (new-pinyin-test-path))))
-    (check (null (funcall provider "hao"))
+          (new-completion-provider (new-completion-test-path))))
+    (check (null (funcall provider "code"))
            "The provider must not use a bundled fallback.")))
 
-(deftest pinyin-provider-merges-txt-files ()
-  (let* ((directory (new-pinyin-test-directory))
+(deftest completion-provider-merges-txt-files ()
+  (let* ((directory (new-completion-test-directory))
          (first-path (merge-pathnames "a.txt" directory))
          (second-path (merge-pathnames "b.txt" directory)))
     (unwind-protect
          (progn
-           (set-pinyin-test-dictionary
+           (set-completion-test-dictionary
             first-path
-            (list (format nil "号~Chao~C5" #\Tab #\Tab)
-                  (format nil "啊~Chao~C7" #\Tab #\Tab)))
-           (set-pinyin-test-dictionary
+            (list (format nil "A~Ccode~C5" #\Tab #\Tab)
+                  (format nil "B~Ccode~C7" #\Tab #\Tab)))
+           (set-completion-test-dictionary
             second-path
-            (list (format nil "好~Chao~C7" #\Tab #\Tab)
-                  (format nil "号~Chao~C9" #\Tab #\Tab)))
+            (list (format nil "C~Ccode~C7" #\Tab #\Tab)
+                  (format nil "A~Ccode~C9" #\Tab #\Tab)))
            (let* (;; Read every direct TXT file in filename order.
                   (paths
-                    (mtm.completion::get-pinyin-dictionary-files directory))
+                    (mtm.completion::get-completion-dictionary-files directory))
                   ;; Read entries in the sorted file order.
                   (entries
-                    (mtm.completion::new-pinyin-dictionary-entries paths))
+                    (mtm.completion::new-completion-dictionary-entries paths))
                   ;; Rank merged candidates by descending weight.
                   (candidates
-                    (mtm.completion::get-pinyin-completion-candidates
+                    (mtm.completion::get-completion-candidates
                      entries
-                     "hao")))
-             (check (equal '("号" "啊" "好") candidates)
+                     "code")))
+             (check (equal '("A" "B" "C") candidates)
                     "The provider must merge and rank TXT dictionary files.")))
-      (del-pinyin-test-directory directory))))
+      (del-completion-test-directory directory))))
 
-(deftest completion-provider-accepts-unweighted-english ()
+(deftest completion-provider-accepts-unweighted-text ()
   (let (;; Keep the fixture outside the project tree.
-        (path (new-pinyin-test-path)))
+        (path (new-completion-test-path)))
     (unwind-protect
          (progn
-           (set-pinyin-test-dictionary
+           (set-completion-test-dictionary
             path
-            (list (format nil "hello~Chello" #\Tab)
-                  (format nil "help~Chelp~C" #\Tab #\Tab)
-                  (format nil "helpful~Chelpful~C3" #\Tab #\Tab)
+            (list (format nil "candidate-one~Ccode~C" #\Tab #\Tab)
+                  (format nil "candidate-two~Ccode~C" #\Tab #\Tab)
+                  (format nil "candidate-three~Ccode~C3" #\Tab #\Tab)
                   (format nil "# hidden~Chidden" #\Tab)))
-           (let* (;; Load the English fixture through the existing provider.
-                  (provider (new-pinyin-completion-provider path))
+           (let* (;; Load the text fixture through the existing provider.
+                  (provider (new-completion-provider path))
                   ;; Read candidates in weight and source order.
-                  (candidates (funcall provider "hel"))
+                  (candidates (funcall provider "code"))
                   ;; Use the same provider as the Editor area.
                   (editor
                     (mtm.editor:new-editor :completion-provider provider)))
-             (check (equal '("helpful" "hello" "help") candidates)
+             (check (equal '("candidate-three" "candidate-one" "candidate-two")
+                           candidates)
                     "The provider must accept missing and empty weights.")
              (check (not (member "# hidden" candidates :test #'string=))
                     "The provider must ignore dictionary comments.")
-             (check (eq (mtm.editor:set-editor-byte editor (char-code #\h))
+             (check (eq (mtm.editor:set-editor-byte editor (char-code #\c))
                         :changed)
-                    "Typing h must open the English Completion menu.")
+                    "Typing a code prefix must open the Completion menu.")
+             (mtm.editor:set-editor-byte editor (char-code #\o))
+             (mtm.editor:set-editor-byte editor (char-code #\d))
              (mtm.editor:set-editor-byte editor (char-code #\e))
-             (mtm.editor:set-editor-byte editor (char-code #\l))
              (check (eq (mtm.editor:set-editor-byte editor (char-code #\1))
                         :changed)
-                    "Number one must accept the English candidate.")
-             (check (string= "helpful"
+                    "Number one must accept the selected candidate.")
+             (check (string= "candidate-three"
                              (bytes-to-string
                               (mtm.editor::get-editor-buffer editor)))
-                    "The English candidate must replace the prefix.")))
-      (del-pinyin-test-dictionary path))))
+                    "The selected candidate must replace the prefix.")))
+      (del-completion-test-dictionary path))))
 
-(deftest editor-area-completes-pinyin-character ()
+(deftest editor-area-completes-unicode-candidate ()
   (let (;; Keep the fixture outside the project tree.
-        (path (new-pinyin-test-path)))
+        (path (new-completion-test-path)))
     (unwind-protect
          (progn
-           (set-pinyin-test-dictionary path)
+           (set-completion-test-dictionary path)
            (let* (;; Load only the test dictionary.
-                  (provider (new-pinyin-completion-provider path))
+                  (provider (new-completion-provider path))
                   ;; Read candidates in descending weight order.
-                  (candidates (funcall provider "hao"))
+                  (candidates (funcall provider "code"))
                   ;; Use the same provider as the Editor area.
                   (editor
                     (mtm.editor:new-editor :completion-provider provider)))
-             (check (equal '("好" "啊" "号") candidates)
+             (check (equal '("★" "☂" "☀") candidates)
                     "The user provider must rank weighted candidates.")
-             (check (not (member "好好" candidates :test #'string=))
-                    "The provider must reject multi-character entries.")
-             (mtm.editor::set-editor-buffer-octets editor (get-utf8 "hao"))
+             (mtm.editor::set-editor-buffer-octets editor (get-utf8 "code"))
              (check (eq (mtm.editor:set-editor-key editor :tab) :changed)
-                    "Tab must open the Pinyin Completion menu.")
+                    "Tab must open the Completion menu.")
              (check (mtm.editor:get-editor-completion-active-p editor)
-                    "The Pinyin Completion menu must remain active.")
+                    "The Completion menu must remain active.")
              (check (eq (mtm.editor:set-editor-byte editor (char-code #\1))
                         :changed)
-                    "Number one must accept the Pinyin candidate.")
-             (check (string= "好"
+                    "Number one must accept the Unicode candidate.")
+             (check (string= "★"
                              (nth-value
                               0
                               (mtm.utf8:get-utf8-chunk
                                (mtm.editor::get-editor-buffer editor))))
-                    "The Pinyin candidate must replace hao.")))
-      (del-pinyin-test-dictionary path))))
+                    "The selected candidate must replace the code.")))
+      (del-completion-test-dictionary path))))
 
-;; Verify that Korean and Japanese single-character entries remain valid.
-(deftest pinyin-provider-accepts-korean-and-japanese-characters ()
+;; Verify that Unicode candidates remain valid.
+(deftest completion-provider-accepts-unicode-candidates ()
   (let (;; Keep the fixture outside the project tree.
-        (path (new-pinyin-test-path)))
+        (path (new-completion-test-path)))
     (unwind-protect
          (progn
-           (set-pinyin-test-dictionary
+           (set-completion-test-dictionary
             path
-            (list (format nil "한~Chan~C0" #\Tab #\Tab)
-                  (format nil "あ~Ca~C0" #\Tab #\Tab)
-                  (format nil "カ~Cka~C0" #\Tab #\Tab)))
+            (list (format nil "☀~Cx~C0" #\Tab #\Tab)
+                  (format nil "★~Cy~C0" #\Tab #\Tab)
+                  (format nil "☂~Cz~C0" #\Tab #\Tab)))
            (let (;; Load the fixture with the dictionary provider.
-                 (provider (new-pinyin-completion-provider path)))
-             (check (equal '(("한") ("あ") ("カ"))
-                           (list (funcall provider "han")
-                                 (funcall provider "a")
-                                 (funcall provider "ka")))
-                    "The provider must accept Korean and Japanese characters.")))
-      (del-pinyin-test-dictionary path))))
+                 (provider (new-completion-provider path)))
+             (check (equal '(("☀") ("★") ("☂"))
+                           (list (funcall provider "x")
+                                 (funcall provider "y")
+                                 (funcall provider "z")))
+                    "The provider must accept Unicode candidates.")))
+      (del-completion-test-dictionary path))))
 
-(deftest frontend-creates-editor-with-pinyin-provider ()
+(deftest frontend-creates-editor-with-completion-provider ()
   (new-session-manager)
   (unwind-protect
        (let* ((session (new-session-value "default-completion" :shell "/bin/sh"))

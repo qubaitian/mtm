@@ -5,7 +5,7 @@
 superseded by ADR-0023
 
 MTM must avoid committing a large Completion dictionary.
-MTM reads only the user 8105 dictionary at `~/.mtm/dictionaries/8105.dict.yaml`.
-It does not use a bundled fallback when that file is missing.
-This follows Rime-ice's separate user-dictionary pattern while keeping `.dict.yaml` format.
-The Provider loads the dictionary once, so restart MTM after edits.
+MTM reads user dictionary files from `~/.mtm/dictionaries/`.
+It does not use a bundled fallback when those files are missing.
+This keeps user-maintained Completion data outside the source tree.
+The provider loads dictionaries once, so restart MTM after edits.

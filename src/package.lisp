@@ -34,8 +34,8 @@
 (defpackage #:mtm.completion
   (:use #:cl)
   (:export
-   #:get-pinyin-completion-provider
-   #:new-pinyin-completion-provider))
+   #:get-completion-provider
+   #:new-completion-provider))
 
 (defpackage #:mtm.prompt
   (:use #:cl)
@@ -250,7 +250,7 @@
   (:import-from #:mtm.prompt
                 #:get-prompt-line)
   (:import-from #:mtm.completion
-                #:get-pinyin-completion-provider)
+                #:get-completion-provider)
   (:import-from #:mtm.editor
                 #:del-editor-render
                 #:del-editor-completion

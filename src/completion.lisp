@@ -1,39 +1,31 @@
 (in-package #:mtm.completion)
 
-;; Store the relative directory for user romanization dictionary files.
-(defparameter +pinyin-dictionary-relative-directory+
+;; Store the relative directory for user Completion dictionary files.
+(defparameter +completion-dictionary-relative-directory+
   ".mtm/dictionaries/")
 
-;; Return the user's romanization dictionary directory.
-(defun get-pinyin-dictionary-directory ()
+;; Return the user's Completion dictionary directory.
+(defun get-completion-dictionary-directory ()
   (merge-pathnames
-   +pinyin-dictionary-relative-directory+
+   +completion-dictionary-relative-directory+
    (user-homedir-pathname)))
 
-;; Return direct romanization dictionary files in deterministic filename order.
-(defun get-pinyin-dictionary-files
-    (&optional (directory (get-pinyin-dictionary-directory)))
+;; Return direct Completion dictionary files in filename order.
+(defun get-completion-dictionary-files
+    (&optional (directory (get-completion-dictionary-directory)))
   (sort
    (remove-if #'uiop:directory-pathname-p
               (directory (merge-pathnames "*.txt" directory)))
    #'string<
    :key #'namestring))
 
-;; Return true when TEXT contains one Unicode Completion character.
-(defun get-completion-character-p (text)
-  (= (length text) 1))
-
-;; Return true when TEXT is an ASCII English Completion candidate.
-(defun get-english-word-p (text)
+;; Return true when TEXT is a valid Completion candidate.
+(defun get-completion-candidate-p (text)
   (and (plusp (length text))
-       (not (char= (char text 0) #\#))
-       (some #'alpha-char-p text)
-       (every (lambda (character)
-                (<= (char-code character) 127))
-              text)))
+       (not (char= (char text 0) #\#))))
 
 ;; Return a candidate, code, and optional weight from one dictionary line.
-(defun get-pinyin-dictionary-entry (line)
+(defun get-completion-dictionary-entry (line)
   (let (;; Find the candidate and code separator.
         (first-tab (position #\Tab line)))
     (when first-tab
@@ -60,15 +52,14 @@
                              (string= weight-text ""))
                          0
                          (ignore-errors (parse-integer weight-text)))))
-        (when (and (or (get-completion-character-p candidate)
-                       (get-english-word-p candidate))
+        (when (and (get-completion-candidate-p candidate)
                    (plusp (length code))
                    (integerp weight)
                    (not (minusp weight)))
           (values candidate code weight))))))
 
 ;; Read valid Completion dictionary entries in file and line order.
-(defun new-pinyin-dictionary-entries (paths)
+(defun new-completion-dictionary-entries (paths)
   (let (;; Preserve dictionary order for candidate ranking.
         (entries nil))
     (dolist (path (if (listp paths) paths (list paths)))
@@ -82,63 +73,63 @@
           do (multiple-value-bind
                  ;; Extract one valid candidate entry.
                  (candidate code weight)
-                 (get-pinyin-dictionary-entry line)
+                 (get-completion-dictionary-entry line)
                (when weight
                  ;; Store code, candidate, and weight for matching.
                  (push (list code candidate weight) entries))))))
     (nreverse entries)))
 
 ;; Return true when CODE starts with PREFIX.
-(defun get-pinyin-prefix-p (prefix code)
+(defun get-completion-prefix-p (prefix code)
   (and (plusp (length prefix))
        (<= (length prefix) (length code))
        (string= prefix code :end2 (length prefix))))
 
-;; Return dictionary candidates matching a romanization prefix.
-(defun get-pinyin-completion-candidates (entries prefix)
+;; Return dictionary candidates matching a Completion code prefix.
+(defun get-completion-candidates (entries prefix)
   (let* (;; Normalize user input before dictionary matching.
          (normalized-prefix (string-downcase prefix))
          ;; Collect matching entries before sorting and deduplication.
          (matches nil)
-         ;; Avoid showing one character more than once.
+         ;; Avoid showing one candidate more than once.
          (seen (make-hash-table :test #'equal))
          ;; Collect candidates before restoring source order.
          (candidates nil))
     (dolist (entry entries)
-      (let (;; Read the Pinyin code for this entry.
+      (let (;; Read the Completion code for this entry.
             (code (first entry)))
-        (when (get-pinyin-prefix-p normalized-prefix code)
+        (when (get-completion-prefix-p normalized-prefix code)
           (push entry matches))))
     ;; Sort high weights first while preserving source order for ties.
     (setf matches
           (stable-sort (nreverse matches) #'> :key #'third))
     (dolist (entry matches (nreverse candidates))
-      (let (;; Read the single-character candidate for this entry.
+      (let (;; Read the candidate for this entry.
             (candidate (second entry)))
         (unless (gethash candidate seen)
           (setf (gethash candidate seen) t)
           (push candidate candidates))))))
 
 ;; Create one Completion provider backed by a dictionary snapshot.
-(defun new-pinyin-completion-provider
+(defun new-completion-provider
     (&optional path)
   (let (;; Load all user files unless a test supplies one path.
         (entries
           (handler-case
-              (new-pinyin-dictionary-entries
+              (new-completion-dictionary-entries
                (if path
                    (list path)
-                   (get-pinyin-dictionary-files)))
+                   (get-completion-dictionary-files)))
             ;; Missing data disables completion without blocking the Editor.
             (file-error () nil))))
     (lambda (prefix)
-      (get-pinyin-completion-candidates entries prefix))))
+      (get-completion-candidates entries prefix))))
 
 ;; Cache the default provider for all local Editor areas.
-(defvar *pinyin-completion-provider* nil)
+(defvar *completion-provider* nil)
 
-;; Return the shared default Pinyin Completion provider.
-(defun get-pinyin-completion-provider ()
-  (or *pinyin-completion-provider*
-      (setf *pinyin-completion-provider*
-            (new-pinyin-completion-provider))))
+;; Return the shared default Completion provider.
+(defun get-completion-provider ()
+  (or *completion-provider*
+      (setf *completion-provider*
+            (new-completion-provider))))

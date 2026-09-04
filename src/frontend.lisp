@@ -381,7 +381,7 @@
                               (session-history-box
                                (attachment-session attachment))
                               :completion-provider
-                              (get-pinyin-completion-provider))))
+                              (get-completion-provider))))
           (unless (session-frontend-input-parser frontend)
             (setf (session-frontend-input-parser frontend)
                   (new-input-parser))))

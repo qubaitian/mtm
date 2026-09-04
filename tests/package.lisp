@@ -56,7 +56,7 @@
                 #:get-utf8
                 #:get-utf8-chunk)
   (:import-from #:mtm.completion
-                #:new-pinyin-completion-provider)
+                #:new-completion-provider)
   (:import-from #:mtm.platform
                 #:tty-p
                 #:set-raw-terminal)
