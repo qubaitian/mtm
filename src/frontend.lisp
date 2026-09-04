@@ -413,6 +413,10 @@
           (error () 0))
         0)))
 
+;; Return the Prompt line for FRONTEND's Session.
+(defun get-frontend-prompt-line (frontend)
+  (get-prompt-line (or (session-frontend-name frontend) "")))
+
 (defun del-frontend-editor-render (frontend)
   "Erase FRONTEND's Editor area overlay."
   (let ((render (session-frontend-editor-render frontend)))
@@ -420,7 +424,7 @@
       (del-editor-render render (session-frontend-output-fd frontend))
       (setf (session-frontend-editor-render frontend) nil))))
 
-;; Draw the Editor area unless full-screen transport is active.
+;; Draw the Prompt line and Editor area unless full-screen transport is active.
 (defun set-frontend-editor-render (frontend)
   "Draw FRONTEND's Editor area at column 0."
   (let ((editor (session-frontend-editor frontend))
@@ -428,20 +432,24 @@
     (when (and editor
                output-fd
                (not (session-frontend-full-screen-p frontend)))
-      (if (and (editor-empty-p editor)
-               (not (get-editor-completion-active-p editor)))
-          (del-frontend-editor-render frontend)
-          (progn
-            (set-frontend-size frontend)
+      (let (;; Read the current Prompt line before drawing the Editor area.
+            (prompt (get-frontend-prompt-line frontend)))
+        (if (and (editor-empty-p editor)
+                 (not (get-editor-completion-active-p editor))
+                 (zerop (length prompt)))
             (del-frontend-editor-render frontend)
-            (setf (session-frontend-editor-render frontend)
-                  (set-editor-render
-                   editor
-                   output-fd
-                   (session-frontend-columns frontend)
-                   (get-editor-viewport-height frontend)
-                   0
-                   (1+ (get-frontend-terminal-cursor-row frontend)))))))))
+            (progn
+              (set-frontend-size frontend)
+              (del-frontend-editor-render frontend)
+              (setf (session-frontend-editor-render frontend)
+                    (set-editor-render
+                     editor
+                     output-fd
+                     (session-frontend-columns frontend)
+                     (get-editor-viewport-height frontend)
+                     0
+                     (1+ (get-frontend-terminal-cursor-row frontend))
+                     prompt))))))))
 
 (defun set-editor-mouse-event
     (frontend button column row press-p)
@@ -768,6 +776,7 @@ FLUSH-P resolves one pending standalone Escape key."
      (unwind-protect
           (progn
             (set-frontend-editor frontend)
+            (set-frontend-editor-render frontend)
             (set-terminal-mouse frontend)
             (set-bracketed-paste frontend)
             (set-terminal-loop frontend))
@@ -860,6 +869,7 @@ FLUSH-P resolves one pending standalone Escape key."
 (defun set-attachment-loop (frontend)
   "Run FRONTEND until its Attachment or input ends."
   (set-frontend-editor frontend)
+  (set-frontend-editor-render frontend)
   (let ((input-fd (session-frontend-input-fd frontend))
         (input-open-p (not (null (session-frontend-input-fd frontend)))))
     (loop

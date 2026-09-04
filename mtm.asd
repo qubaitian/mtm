@@ -7,6 +7,7 @@
                (:file "src/utf8")
                (:file "src/platform")
                (:file "src/completion")
+               (:file "src/prompt")
                (:file "src/editor")
                (:file "src/pty")
                (:file "src/service")

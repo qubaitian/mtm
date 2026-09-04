@@ -249,7 +249,8 @@
                 (error "The name ~A already belongs to a Service." name))
               (let ((shell-session (new-shell-session :shell shell
                                                       :width width
-                                                      :height height))
+                                                      :height height
+                                                      :prompt-adapter-p t))
                     (success-p nil))
               ;; Clean up the PTY if Session construction fails.
               (unwind-protect

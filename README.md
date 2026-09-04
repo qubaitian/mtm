@@ -165,6 +165,34 @@ The manager stays alive after each command exits.
 
 MTM has no evaluator or debug mode.
 
+## Prompt line
+
+MTM renders one Prompt line for every named Session.
+The Browser terminal remains an ordinary Shell.
+The default template is `[mtm:<name>] `.
+The template uses `~A` for the Session name.
+
+Create `~/.mtm/config` before starting the Session manager.
+The manager loads this file as trusted Common Lisp code.
+
+```lisp
+(defun get-my-prompt-line (session-name)
+  (let ((manager (mtm:get-session-manager)))
+    (format nil "[~A ~A] "
+            session-name
+            (getf manager :state))))
+
+(mtm:set-prompt-template "[mtm:~A] ")
+(mtm:set-prompt-provider #'get-my-prompt-line)
+```
+
+The provider receives only the current Session name.
+It can query MTM or run external commands with `uiop:run-program`.
+It must return one plain text line.
+Provider errors use the default template and record the error.
+Restart the Session manager after changing this file.
+The first Shell adapter targets zsh.
+
 ## Lisp interface
 
 The public data interface uses named functions.

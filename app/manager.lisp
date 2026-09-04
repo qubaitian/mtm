@@ -436,6 +436,7 @@
   (let ((listener (new-manager-listener)))
     (when listener
       (new-session-manager)
+      (set-prompt-config)
       (let ((browser-server nil))
         (unwind-protect
              (progn

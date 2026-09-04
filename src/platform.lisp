@@ -284,10 +284,20 @@
         (foreign-string-free pointer)))))
 
 ;; Start the selected shell inside a non-blocking PTY.
-(defun new-pty (shell width height)
+(defun new-pty (shell width height &key environment)
   "Start SHELL inside a non-blocking PTY."
   (check-type shell string)
-  (new-pty-process (list shell "-i") width height))
+  (new-pty-process
+   (if environment
+       (append (list "/usr/bin/env")
+               ;; Convert each environment pair into one env argument.
+               (mapcar (lambda (entry)
+                         (format nil "~A=~A" (car entry) (cdr entry)))
+                       environment)
+               (list shell "-i"))
+       (list shell "-i"))
+   width
+   height))
 
 ;; Wait for descriptor events and return their readiness flags.
 (defun get-poll-events (descriptors &key (timeout -1))

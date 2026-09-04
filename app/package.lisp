@@ -39,6 +39,8 @@
                 #:session-full-screen-p)
   (:import-from #:mtm.frontend
                 #:set-socket-frontend)
+  (:import-from #:mtm.prompt
+                #:set-prompt-config)
   (:import-from #:mtm.platform
                 #:get-fd
                 #:set-close-on-exec

@@ -21,16 +21,70 @@
 ;; Represent one arbitrary program inside a PTY.
 (defclass process-session (pty-process) ())
 
+;; Return true when SHELL names the supported zsh adapter target.
+;; ponytail: adapt zsh first; add other shells when required.
+(defun zsh-shell-p (shell)
+  (string-equal "zsh" (pathname-name (pathname shell))))
+
+;; Return the directory used for MTM's zsh startup files.
+(defun get-zsh-adapter-directory ()
+  (merge-pathnames ".mtm/zsh/" (user-homedir-pathname)))
+
+;; Store one zsh adapter startup file.
+(defun set-zsh-adapter-file (path contents)
+  (with-open-file (stream path
+                          :direction :output
+                          :if-exists :supersede
+                          :if-does-not-exist :create)
+    (write-string contents stream)))
+
+;; Create the zsh files that preserve user startup configuration.
+(defun set-zsh-adapter ()
+  (let (;; Keep the adapter directory path for both startup files.
+        (directory (get-zsh-adapter-directory)))
+    (ensure-directories-exist (merge-pathnames ".zshenv" directory))
+    (set-zsh-adapter-file
+     (merge-pathnames ".zshenv" directory)
+     (format nil
+             "setopt rcs~%if [[ -n \"$MTM_ORIGINAL_ZDOTDIR\" && -r \"$MTM_ORIGINAL_ZDOTDIR/.zshenv\" ]]; then~%  ZDOTDIR=\"$MTM_ORIGINAL_ZDOTDIR\"~%  source \"$ZDOTDIR/.zshenv\"~%fi~%setopt rcs~%ZDOTDIR=\"$MTM_ADAPTER_ZDOTDIR\"~%"))
+    (set-zsh-adapter-file
+     (merge-pathnames ".zshrc" directory)
+     (format nil
+             "setopt rcs~%if [[ -n \"$MTM_ORIGINAL_ZDOTDIR\" && -r \"$MTM_ORIGINAL_ZDOTDIR/.zshrc\" ]]; then~%  ZDOTDIR=\"$MTM_ORIGINAL_ZDOTDIR\"~%  source \"$ZDOTDIR/.zshrc\"~%fi~%PROMPT=''~%PS1=''~%RPROMPT=''~%RPS1=''~%PS2=''~%PS3=''~%PS4=''~%PROMPT_EOL_MARK=''~%unsetopt prompt_sp~%ZDOTDIR=\"$MTM_ORIGINAL_ZDOTDIR\"~%unset MTM_ORIGINAL_ZDOTDIR MTM_ADAPTER_ZDOTDIR~%"))
+    directory))
+
+;; Return environment values for the zsh Prompt adapter.
+(defun get-zsh-adapter-environment ()
+  (let* (;; Preserve the user's original zsh startup directory.
+         (original-directory
+           (or (uiop:getenv "ZDOTDIR")
+               (namestring (user-homedir-pathname))))
+         ;; Point zsh at the MTM startup wrapper.
+         (adapter-directory (namestring (set-zsh-adapter))))
+    (list (cons "ZDOTDIR" adapter-directory)
+          (cons "MTM_ORIGINAL_ZDOTDIR" original-directory)
+          (cons "MTM_ADAPTER_ZDOTDIR" adapter-directory))))
+
 ;; Return the shell selected by the environment.
 (defun get-shell ()
   "Return the shell selected by the environment."
   (or (uiop:getenv "SHELL") "/bin/sh"))
 
 ;; Start one selected shell inside a PTY.
-(defun new-shell-session (&key (shell (get-shell)) (width 80) (height 24))
+(defun new-shell-session (&key (shell (get-shell))
+                               (width 80)
+                               (height 24)
+                               (prompt-adapter-p nil))
   "Start the selected shell inside a PTY."
   (multiple-value-bind (master process-id)
-      (new-pty shell width height)
+      (new-pty shell
+               width
+               height
+               :environment
+               (when (and prompt-adapter-p (zsh-shell-p shell))
+                 (handler-case
+                     (get-zsh-adapter-environment)
+                   (error () nil))))
     (make-instance 'shell-session
                    :master master
                    :process-id process-id)))

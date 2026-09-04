@@ -68,7 +68,13 @@
   (multiple-value-bind (symbol status)
       (find-symbol "SET-PASSTHROUGH-FRONTEND" "MTM")
     (check (and symbol (eq status :external))
-           "The public package does not export passthrough.")))
+           "The public package does not export passthrough."))
+  (dolist (name '("SET-PROMPT-PROVIDER" "SET-PROMPT-TEMPLATE"))
+    (multiple-value-bind (symbol status)
+        (find-symbol name "MTM")
+      (check (and symbol (eq status :external))
+             "The public package does not export ~A."
+             name))))
 
 (deftest pty-session-forwards-raw-bytes ()
   (let ((session (new-shell-session :shell "/bin/sh" :width 100 :height 40)))
@@ -366,6 +372,39 @@
       (check (null remaining)
              "UTF-8 termination must clear pending bytes."))))
 
+(deftest prompt-provider-receives-session-name ()
+  (let ((received nil))
+    (unwind-protect
+         (progn
+           (mtm.prompt:set-prompt-template "<~A> ")
+           (mtm.prompt:set-prompt-provider
+            (lambda (session-name)
+              (setf received session-name)
+              (format nil "custom:~A" session-name)))
+           (check (string= "custom:alpha"
+                           (mtm.prompt:get-prompt-line "alpha"))
+                  "The Prompt provider returns the wrong line.")
+           (check (string= "alpha" received)
+                  "The Prompt provider receives the wrong Session name."))
+      (mtm.prompt:set-prompt-provider nil)
+      (mtm.prompt:set-prompt-template "[mtm:~A] "))))
+
+(deftest prompt-provider-falls-back-after-error ()
+  (unwind-protect
+       (progn
+         (mtm.prompt:set-prompt-template "<~A> ")
+         (mtm.prompt:set-prompt-provider
+          (lambda (session-name)
+            (declare (ignore session-name))
+            (error "expected Prompt failure")))
+         (check (string= "<alpha> "
+                         (mtm.prompt:get-prompt-line "alpha"))
+                "The Prompt provider error loses the default line.")
+         (check (mtm.prompt:get-prompt-error)
+                "The Prompt provider error is not recorded."))
+    (mtm.prompt:set-prompt-provider nil)
+    (mtm.prompt:set-prompt-template "[mtm:~A] ")))
+
 (deftest managed-session-flushes-pending-utf8 ()
   (let* ((manager (new-session-manager))
          (terminal (new-terminal-emulator :width 8 :height 2))
@@ -464,6 +503,44 @@
            "The Editor area does not render across the full height.")
     (check (not (screen-has-text-p terminal "session-manager"))
            "The Editor area renders removed Session manager UI.")))
+
+(deftest frontend-renders-configured-prompt-for-empty-editor ()
+  (unwind-protect
+       (progn
+         (mtm.prompt:set-prompt-provider
+          (lambda (session-name)
+            (format nil "~A> " session-name)))
+         (let* ((terminal (new-terminal-emulator :width 32 :height 4))
+                (session
+                  (make-instance
+                   'mtm.session::managed-session
+                   :name "alpha"
+                   :manager nil
+                   :shell-session nil
+                   :terminal terminal))
+                (attachment
+                  (make-instance
+                   'mtm.session::attachment
+                   :session session
+                   :start-screen terminal
+                   :max-buffer-bytes 1))
+                (frontend
+                  (mtm.frontend::new-session-frontend
+                   :name "alpha"
+                   :attachment attachment
+                   :output-fd 1
+                   :columns 32
+                   :rows 4)))
+           (setf (mtm.frontend::session-frontend-editor frontend)
+                 (mtm.editor:new-editor))
+           (check (search "alpha> "
+                          (bytes-to-string
+                           (capture-platform-output
+                            (lambda ()
+                              (mtm.frontend::set-frontend-editor-render
+                               frontend)))))
+                  "The frontend does not render the configured Prompt.")))
+    (mtm.prompt:set-prompt-provider nil)))
 
 (deftest editor-area-submits-and-preserves-spaces ()
   (let ((editor (mtm.editor:new-editor)))
@@ -708,6 +785,21 @@
              "Wrap-boundary cursor must use the next screen row.")
       (check (= (mtm.editor::get-editor-render-cursor-column render) 0)
              "Wrap-boundary cursor must start at column zero."))))
+
+(deftest editor-area-renders-custom-prompt-line ()
+  (let ((editor (mtm.editor:new-editor)))
+    (mtm.editor::set-editor-buffer-octets editor (get-utf8 "ls"))
+    (let ((output
+            (bytes-to-string
+             (capture-platform-output
+              (lambda ()
+                (let ((render
+                        (mtm.editor:set-editor-render
+                         editor 1 40 8 0 1 ">> ")))
+                  (check (= 5 (mtm.editor::get-editor-render-cursor-column render))
+                         "The Prompt width is missing from the cursor column.")))))))
+      (check (search ">> " output)
+             "The Editor render does not contain the Prompt line."))))
 
 ;; Check that a Chinese character uses two terminal cells.
 (deftest editor-area-renders-chinese-cursor-at-two-cells ()

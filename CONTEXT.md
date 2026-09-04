@@ -84,6 +84,21 @@ It can use an Editor area for local input.
 It uses full-screen transport for live PTY input.
 _Avoid_: shell session, command frontend
 
+**Prompt line**:
+A user-visible line rendered by the Terminal frontend.
+It does not come from the Shell's raw PTY output.
+_Avoid_: status bar, zsh prompt
+
+**Prompt template**:
+A configured default format for Prompt line content.
+A Prompt provider can replace the default format.
+_Avoid_: prompt mode, prompt theme
+
+**Prompt provider**:
+A user-defined Common Lisp function that computes a Prompt line.
+It can query the Session manager or external system values.
+_Avoid_: prompt callback, shell prompt
+
 **Browser frontend**:
 A Terminal frontend that runs in a web browser.
 It connects one Attachment to a managed Session.

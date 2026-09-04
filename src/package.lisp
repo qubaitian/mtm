@@ -37,6 +37,18 @@
    #:get-pinyin-completion-provider
    #:new-pinyin-completion-provider))
 
+(defpackage #:mtm.prompt
+  (:use #:cl)
+  (:export
+   #:get-prompt-error
+   #:get-prompt-line
+   #:set-prompt-config
+   #:set-prompt-provider
+   #:set-prompt-template))
+
+(defpackage #:mtm.config
+  (:use #:cl))
+
 (defpackage #:mtm.editor
   (:use #:cl)
   (:import-from #:mtm.platform
@@ -235,6 +247,8 @@
                 #:set-attachment-input
                 #:set-attachment-terminal-size
                 #:set-active-attachment)
+  (:import-from #:mtm.prompt
+                #:get-prompt-line)
   (:import-from #:mtm.completion
                 #:get-pinyin-completion-provider)
   (:import-from #:mtm.editor
@@ -268,6 +282,9 @@
                 #:get-session
                 #:new-session
                 #:set-passthrough-frontend)
+  (:import-from #:mtm.prompt
+                #:set-prompt-provider
+                #:set-prompt-template)
   (:import-from #:mtm.session
                 #:attachment
                 #:attachment-session
@@ -322,4 +339,6 @@
    #:set-service
    #:set-attachment-input
    #:set-attachment-terminal-size
+   #:set-prompt-provider
+   #:set-prompt-template
    #:set-passthrough-frontend))

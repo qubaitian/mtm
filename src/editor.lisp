@@ -790,6 +790,8 @@ FLUSH-P resolves one pending standalone Escape key."
   buffer-start-row
   ;; Column where the visible edit buffer begins.
   start-column
+  ;; Column where the complete Editor render starts.
+  render-column
   ;; Number of terminal rows occupied by the render.
   rows
   ;; Cursor position relative to the visible rows.
@@ -1105,13 +1107,36 @@ FLUSH-P resolves one pending standalone Escape key."
             (1+ (- render-end-row render-start-row))
             (- cursor-absolute-row render-start-row))))
 
-;; Clear only the editor text, then leave the shell prompt intact.
+;; Truncate PROMPT so it stays on one terminal row.
+;; ponytail: accept plain text; add ANSI width parsing when required.
+(defun get-editor-prompt-octets (prompt width start-column)
+  (let* (;; Encode the Prompt line as terminal UTF-8 bytes.
+         (octets (get-utf8 prompt))
+         ;; Reserve one cell for the Editor cursor.
+         (limit (max 0 (- width start-column 1)))
+         ;; Track the next complete UTF-8 character.
+         (end 0)
+         ;; Track the Prompt line's terminal width.
+         (column start-column))
+    (loop while (< end (length octets))
+          for length = (get-utf8-character-length octets end)
+          for cell-width = (get-editor-cell-width octets end column length)
+          do (cond
+               ((= (aref octets end) 10)
+                (return))
+               ((> (+ column cell-width) (+ start-column limit))
+                (return))
+               (t
+                (incf column cell-width)
+                (incf end length))))
+    (subseq octets 0 end)))
+
 ;; Erase the visible Editor area and restore the shell position.
 (defun del-editor-render (render output-fd)
   (when render
     (set-terminal-ascii output-fd +terminal-return+)
     (set-terminal-cursor output-fd "A" (get-editor-render-cursor-row render))
-    (set-terminal-cursor output-fd "C" (get-editor-render-start-column render))
+    (set-terminal-cursor output-fd "C" (get-editor-render-render-column render))
     (set-terminal-ascii output-fd (format nil "~C[K" (code-char 27)))
     (loop repeat (1- (get-editor-render-rows render))
           do (set-terminal-ascii output-fd +terminal-return+)
@@ -1120,15 +1145,24 @@ FLUSH-P resolves one pending standalone Escape key."
                                    (format nil "~C[2K" (code-char 27))))
     (set-terminal-ascii output-fd +terminal-return+)
     (set-terminal-cursor output-fd "A" (1- (get-editor-render-rows render)))
-    (set-terminal-cursor output-fd "C" (get-editor-render-start-column render))))
+    (set-terminal-cursor output-fd "C" (get-editor-render-render-column render))))
 
-;; Render only the screen lines around the cursor.
+;; Render the Prompt line and screen lines around the cursor.
 (defun set-editor-render
-    (editor output-fd width height start-column &optional (start-row 1))
+    (editor output-fd width height start-column &optional (start-row 1) (prompt ""))
   (let* (;; Read the complete Edit buffer.
          (buffer (get-editor-buffer editor))
+         ;; Keep the Prompt line inside one terminal row.
+         (prompt-octets
+           (get-editor-prompt-octets prompt width start-column))
+         ;; Measure the visible Prompt line in terminal cells.
+         (prompt-width
+           (get-editor-display-column
+            prompt-octets 0 (length prompt-octets)))
+         ;; Start the Edit buffer after the Prompt line.
+         (buffer-start-column (+ start-column prompt-width))
          ;; Split the buffer into visible terminal rows.
-         (lines (get-editor-screen-lines buffer width start-column))
+         (lines (get-editor-screen-lines buffer width buffer-start-column))
          ;; Find the visual row containing the Insertion point.
          (cursor-line
            (get-editor-screen-line-index lines (get-editor-cursor editor)))
@@ -1140,7 +1174,7 @@ FLUSH-P resolves one pending standalone Escape key."
          ;; Preserve the starting column after vertical scrolling.
          (visible-start-column
            (if (zerop first-line)
-               start-column
+               buffer-start-column
                (get-editor-screen-line-start-column (first visible-lines))))
          ;; Convert the one-based terminal row to a zero-based offset.
          (visible-start-row
@@ -1155,6 +1189,9 @@ FLUSH-P resolves one pending standalone Escape key."
        output-fd
        (format nil "~C[~D;1H" (code-char 27) buffer-start-row))
       (set-terminal-ascii output-fd +terminal-return+)
+      (set-terminal-ascii output-fd (format nil "~C[2K" (code-char 27)))
+      (set-terminal-cursor output-fd "C" start-column)
+      (set-terminal-octets output-fd prompt-octets)
       (loop for line in visible-lines
             for index from 0
             do (set-editor-display
@@ -1177,7 +1214,7 @@ FLUSH-P resolves one pending standalone Escape key."
              ;; Preserve the visual line's starting terminal column.
              (line-start-column
                (if (zerop cursor-line)
-                   start-column
+                   buffer-start-column
                    (get-editor-screen-line-start-column line)))
              ;; Measure the cursor column in terminal cells.
              (cursor-column
@@ -1196,7 +1233,7 @@ FLUSH-P resolves one pending standalone Escape key."
               (menu-row menu-column menu-count render-start-row render-rows
                render-cursor-row)
             (get-editor-completion-layout
-             editor buffer lines cursor-line cursor-row start-column width height
+             editor buffer lines cursor-line cursor-row buffer-start-column width height
              buffer-start-row)
           (when (and menu-row (plusp menu-count))
             (set-editor-completion-display
@@ -1212,6 +1249,8 @@ FLUSH-P resolves one pending standalone Escape key."
            :start-row render-start-row
            :buffer-start-row buffer-start-row
            :start-column visible-start-column
+           :render-column
+           (if (zerop first-line) start-column visible-start-column)
            :rows render-rows
            :cursor-row render-cursor-row
            :cursor-column cursor-column
