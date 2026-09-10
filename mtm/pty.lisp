@@ -1,0 +1,155 @@
+(defpackage #:mtm.pty
+  (:use #:cl)
+  (:import-from #:mtm.platform
+                #:del-pty
+                #:get-fd
+                #:set-fd
+                #:new-pty
+                #:new-pty-process
+                #:del-process
+                #:del-process-handle
+                #:get-process-status
+                #:set-process-signal
+                #:set-terminal-size)
+  (:export
+   #:del-shell-session
+   #:pty-master
+   #:get-shell-output-bytes
+   #:session-open-p
+   #:shell-session
+   #:new-shell-session
+   #:del-process-session
+   #:get-process-id
+   #:get-process-output-bytes
+   #:new-process-session
+   #:set-shell-input
+   #:set-shell-size))
+
+(in-package #:mtm.pty)
+
+;; Store one PTY master and its child process.
+(defclass pty-process ()
+  ((master
+    ;; Store the SBCL-owned PTY stream.
+    :initarg :master
+    :reader pty-master)
+   (child-process
+    ;; Store the SBCL process object, which owns child reaping.
+    :initarg :child-process
+    :reader session-child-process)
+   (open-p
+    ;; Track whether the PTY still accepts I/O.
+    :initform t
+    :accessor session-open-p)))
+
+;; Represent one interactive shell inside a PTY.
+(defclass shell-session (pty-process) ())
+
+;; Represent one arbitrary program inside a PTY.
+(defclass process-session (pty-process) ())
+
+;; Return the shell selected by the environment.
+(defun get-shell ()
+  "Return the shell selected by the environment."
+  (or (uiop:getenv "SHELL") "/bin/sh"))
+
+;; Start one selected shell inside a PTY.
+(defun new-shell-session (&key (shell (get-shell))
+                               (width 80)
+                               (height 24))
+  "Start the selected shell inside a PTY."
+  (multiple-value-bind (master child-process)
+      (new-pty shell width height)
+    (make-instance 'shell-session
+                   :master master
+                   :child-process child-process)))
+
+;; Start PROGRAM inside a fixed-size PTY.
+(defun new-process-session (&key program working-directory (width 80) (height 24))
+  "Start PROGRAM inside a fixed-size PTY."
+  (multiple-value-bind (master child-process)
+      (new-pty-process program width height
+                       :working-directory working-directory)
+    (make-instance 'process-session
+                   :master master
+                   :child-process child-process)))
+
+;; Return PROCESS's child process identifier.
+(defun get-process-id (process)
+  "Return PROCESS's child process identifier."
+  (check-type process pty-process)
+  (mtm.platform:get-process-id (session-child-process process)))
+
+(defun get-open-shell-session (session)
+  "Signal an error when SESSION no longer accepts I/O."
+  (unless (session-open-p session)
+    (error "The shell session is closed."))
+  session)
+
+(defun get-shell-output-bytes (session &key (max-bytes 4096) (wait-p t))
+  "Read PTY bytes and return bytes plus an end-of-file flag."
+  (get-open-shell-session session)
+  (get-fd (pty-master session) :max-bytes max-bytes :wait-p wait-p))
+
+;; Read raw PTY bytes from PROCESS.
+(defun get-process-output-bytes (process &key (max-bytes 4096) (wait-p t))
+  "Read raw PTY bytes from PROCESS."
+  (unless (session-open-p process)
+    (error "The PTY process is closed."))
+  (get-fd (pty-master process) :max-bytes max-bytes :wait-p wait-p))
+
+(defun valid-byte-vector-p (bytes)
+  (and (vectorp bytes)
+       (every (lambda (byte)
+               (and (integerp byte) (<= 0 byte 255)))
+              bytes)))
+
+(defun set-shell-input (session bytes)
+  "Write raw octets into SESSION."
+  (get-open-shell-session session)
+  (unless (valid-byte-vector-p bytes)
+    (error "Input must be an octet vector."))
+  (set-fd (pty-master session) bytes))
+
+(defun set-shell-size (session rows columns)
+  "Set SESSION's PTY row and column counts."
+  (get-open-shell-session session)
+  (set-terminal-size (pty-master session) rows columns))
+
+(defun del-shell-session (session)
+  "Close SESSION and reap its shell process."
+  (when (session-open-p session)
+    (setf (session-open-p session) nil)
+    (unwind-protect
+        (progn
+          (ignore-errors (del-pty (pty-master session)))
+          (ignore-errors (del-process (session-child-process session)))
+          (ignore-errors
+            (get-process-status (session-child-process session))))
+      (ignore-errors (del-process-handle (session-child-process session)))
+      (setf (session-open-p session) nil)))
+  t)
+
+;; Stop PROCESS gracefully, then close and reap its PTY child.
+(defun del-process-session (process &key (terminate-p t))
+  "Stop PROCESS gracefully, then close and reap its PTY child."
+  (check-type process process-session)
+  (when (session-open-p process)
+    (setf (session-open-p process) nil)
+    (let ((status nil)
+          (child-process (session-child-process process)))
+      (when terminate-p
+        (set-process-signal child-process 15)
+        (loop repeat 200
+              do (setf status
+                       (get-process-status child-process :no-hang-p t))
+              when status
+                do (return)
+              do (sleep 0.01))
+        (unless status
+          (set-process-signal child-process 9)))
+      (ignore-errors (del-pty (pty-master process)))
+      (unless status
+        (ignore-errors (get-process-status child-process)))
+      (del-process-handle child-process)))
+  t)

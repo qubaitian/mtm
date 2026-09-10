@@ -1,0 +1,7 @@
+#!/usr/bin/env -S sbcl --noinform --script
+
+#-quicklisp
+(load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname)))
+
+(ql:quickload :mtm :silent t)
+(mtm.cli:main)

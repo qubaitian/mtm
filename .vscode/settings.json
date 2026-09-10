@@ -1,0 +1,19 @@
+{
+    "editor.guides.bracketPairs": "active",
+    "[commonlisp]": {
+        "editor.codeLens": false,
+    },
+    "alive.enableDiagnostics": false,
+    "alive.lsp.install.path": "/Users/qubaitian/common-lisp/alive-lsp",
+    "alive.lsp.startCommand": [
+        "sbcl",
+        "--noinform",
+        "--disable-debugger",
+        "--eval",
+        "(asdf:load-system :alive-lsp)",
+        "--eval",
+        "(ql:quickload :mtm :silent t)",
+        "--eval",
+        "(alive/server:start)"
+    ]
+}

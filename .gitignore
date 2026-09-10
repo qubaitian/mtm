@@ -1,0 +1,18 @@
+# Local issue tracker scratch (skills write here)
+.scratch/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/*
+!.vscode/settings.json
+
+#
+syntax/
